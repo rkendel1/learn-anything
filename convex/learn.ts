@@ -149,3 +149,37 @@ export const saveLessonResponse = mutation({
     });
   }
 });
+
+export const getAdaptationContext = internalQuery({
+  args: { journeyId: v.id("journeys"), lessonId: v.string() },
+  handler: async (ctx, args) => {
+    const journey = await ctx.db.get(args.journeyId);
+    if (!journey) return null;
+    const latest = await ctx.db.query("curriculumVersions")
+      .withIndex("by_journey_version", (q) => q.eq("journeyId", args.journeyId))
+      .order("desc").first();
+    if (!latest) return null;
+    const curriculum = latest.curriculum as { lessons?: Array<any>; objectives?: Array<any>; [key: string]: any };
+    const currentIndex = (curriculum.lessons ?? []).findIndex((lesson) => lesson.id === args.lessonId);
+    if (currentIndex < 0) return null;
+    const evidence = await ctx.db.query("learningEvidence")
+      .withIndex("by_journey", (q) => q.eq("journeyId", args.journeyId))
+      .order("desc")
+      .take(100);
+    return {
+      topic: journey.topic,
+      desiredDepth: journey.desiredDepth,
+      startingKnowledge: journey.startingKnowledge,
+      dailyMinutes: journey.dailyMinutes,
+      goal: journey.goal ?? null,
+      completedLessonIds: journey.completedLessonIds,
+      curriculum,
+      currentLessonId: args.lessonId,
+      currentLessonIndex: currentIndex,
+      evidence: evidence
+        .filter((item) => item.lessonId === args.lessonId || journey.completedLessonIds.includes(item.lessonId))
+        .map((item) => ({ lessonId: item.lessonId, kind: item.kind, response: item.response ?? "", result: item.result ?? "", createdAt: item.createdAt }))
+        .slice(0, 30)
+    };
+  }
+});

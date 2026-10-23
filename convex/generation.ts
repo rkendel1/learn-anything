@@ -8,6 +8,19 @@ import type { Doc } from "./_generated/dataModel";
 type Knowledge = "new" | "some" | "experienced" | "expert";
 type Depth = "explore" | "understand" | "deep" | "master";
 
+type AdaptationContext = {
+  topic: string;
+  desiredDepth: string;
+  startingKnowledge: string;
+  dailyMinutes: number;
+  goal: string | null;
+  completedLessonIds: string[];
+  curriculum: { lessons?: Array<any>; [key: string]: any };
+  currentLessonId: string;
+  currentLessonIndex: number;
+  evidence: Array<{ lessonId: string; kind: string; response: string; result: string; createdAt: number }>;
+} | null;
+
 async function askModel<T>(system: string, user: unknown, fallback: () => T): Promise<T> {
   const key = process.env.OPENAI_API_KEY;
   if (!key) return fallback();
@@ -249,5 +262,45 @@ export const recommendTopics = action({
       args,
       fallback
     );
+  }
+});
+
+export const adaptUpcomingLessons = action({
+  args: {
+    journeyId: v.id("journeys"),
+    lessonId: v.string()
+  },
+  handler: async (ctx, args): Promise<{ ok: boolean; changed: number; message: string; usedFallback?: boolean }> => {
+    const context: AdaptationContext = await ctx.runQuery(internal.learn.getAdaptationContext, args);
+    if (!context) throw new Error("Couldn't find the learning journey or lesson.");
+
+    const lessons = Array.isArray(context.curriculum.lessons) ? context.curriculum.lessons : [];
+    const futureLessons = lessons.slice(context.currentLessonIndex + 1)
+      .filter((lesson: any) => !context.completedLessonIds.includes(lesson.id));
+    if (!futureLessons.length) {
+      return { ok: true, changed: 0, message: "There are no upcoming lessons left to adapt." };
+    }
+
+    const adapted = await askModel<Array<any>>(
+      `You adapt upcoming lessons based on learner evidence. Return JSON { lessons: [...] } using the same lesson schema (id, day, title, purpose, lessonBody, objectiveIds, prerequisiteIds, estimatedMinutes, teachingFormat, contentOutline, activities, assessmentIds, sourceIds). Only change future lessons; preserve ids and day numbers. Reframe difficulty and examples based on the evidence.`,
+      { journey: { topic: context.topic, desiredDepth: context.desiredDepth, startingKnowledge: context.startingKnowledge, dailyMinutes: context.dailyMinutes }, futureLessons, evidence: context.evidence },
+      () => futureLessons
+    );
+
+    const changed = adapted.length;
+    const updatedCurriculum = {
+      ...context.curriculum,
+      lessons: [
+        ...lessons.slice(0, context.currentLessonIndex + 1),
+        ...adapted
+      ]
+    };
+
+    await ctx.runMutation(internal.learn.publishCurriculum, {
+      journeyId: args.journeyId,
+      curriculum: updatedCurriculum
+    });
+
+    return { ok: true, usedFallback: !process.env.OPENAI_API_KEY, changed, message: `Adapted ${changed} upcoming lesson(s).` };
   }
 });
