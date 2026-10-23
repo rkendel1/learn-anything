@@ -12,8 +12,8 @@ export function Providers({ children }: { children: ReactNode }) {
   if (!client) {
     return <div className="setup-notice">
       <h2>Connect your Convex project</h2>
-      <p>In a terminal, run <code>npx convex dev</code>, then put the generated deployment URL in <code>.env.local</code> as <code>NEXT_PUBLIC_CONVEX_URL</code>.</p>
-      <p>Restart the Next.js dev server after setting the variable.</p>
+      <p>The Convex deployment URL is not available to this preview yet.</p>
+      <p>Connect the project&apos;s Convex integration, then restart the preview.</p>
     </div>;
   }
   return <ConvexProvider client={client}>{children}</ConvexProvider>;
