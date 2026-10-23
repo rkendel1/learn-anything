@@ -3,6 +3,5 @@ node_modules
 .env.local
 .env
 .convex
-convex/_generated
 *.tsbuildinfo
 .DS_Store
