@@ -42,6 +42,11 @@ export default function HomePage() {
   const generateCalibration = useAction(api.generation.generateCalibration);
   const generateCurriculum = useAction(api.generation.generateCurriculum);
   const recommendTopics = useAction(api.generation.recommendTopics);
+  const evaluateAnswer = useAction(api.generation.evaluateAnswer);
+  const adaptUpcomingLessons = useAction(api.generation.adaptUpcomingLessons);
+  const prepareNextJourney = useAction(api.generation.prepareNextJourney);
+  const acceptJourneyProposal = useMutation(api.learn.acceptJourneyProposal);
+  const rejectJourneyProposal = useMutation(api.learn.rejectJourneyProposal);
 
   const [topic, setTopic] = useState("");
   const [knowledge, setKnowledge] = useState<Knowledge>("new");
@@ -58,6 +63,7 @@ export default function HomePage() {
   const [recommendations, setRecommendations] = useState<Array<{ topic: string; reason: string; depth?: string }>>([]);
   const [expandedLesson, setExpandedLesson] = useState<string | null>(null);
   const [reflection, setReflection] = useState("");
+  const [feedback, setFeedback] = useState<{ result: string; feedback: string; objective: string } | null>(null);
 
   const activeJourney = useMemo(() => {
     if (!journeys) return null;
@@ -113,6 +119,7 @@ export default function HomePage() {
   async function completeLesson(journey: Journey, lesson: Lesson) {
     setBusy(true); setError("");
     try {
+      if (reflection.trim()) setFeedback(await evaluateAnswer({ journeyId: journey._id, lessonId: lesson.id, response: reflection.trim() }));
       await markLessonComplete({ journeyId: journey._id, lessonId: lesson.id, ...(reflection.trim() ? { response: reflection.trim() } : {}) });
       setReflection("");
       setExpandedLesson(null);
@@ -123,6 +130,7 @@ export default function HomePage() {
 
   const isLoading = journeys === undefined;
   const current = activeJourney;
+  const nextProposal = useQuery(api.learn.getJourneyProposal, current ? { journeyId: current._id } : "skip") as { _id: Id<"journeyProposals">; topic: string; mode: string; rationale: string; plan?: { title?: string; lessons?: Lesson[] } } | null | undefined;
   const curriculum = current?.curriculum;
   const completed = current?.completedLessonIds?.length ?? 0;
   const questions = calibrationQuestions.length ? calibrationQuestions : (current?.calibrationQuestions ?? []);
@@ -235,7 +243,9 @@ export default function HomePage() {
                       {lesson.lessonBody && <p className="lesson-body">{lesson.lessonBody}</p>}
                       <ul>{lesson.contentOutline?.map((line, i) => <li key={i}>{line}</li>)}</ul>
                       {lesson.activities?.[0] && <div className="activity-box"><span className="activity-label">TRY IT</span><p>{lesson.activities[0].prompt}</p><textarea rows={3} value={reflection} onChange={(e) => setReflection(e.target.value)} placeholder="Your thoughts, answer, or example…" /></div>}
+                      {feedback && open && <div className="activity-box feedback-box"><span className="activity-label">FEEDBACK · {feedback.objective}</span><p>{feedback.feedback}</p><small>{feedback.result.replaceAll("_", " ")}</small></div>}
                       {!done ? <button className="primary-button" disabled={busy} onClick={() => completeLesson(current, lesson)}>{busy ? "Saving…" : "Mark day complete"} <Check size={16} /></button> : <div className="completed-note"><Check size={15} /> Day completed. Keep going!</div>}
+                      {!done && <button className="text-button" disabled={busy} onClick={async () => { setBusy(true); try { const result = await adaptUpcomingLessons({ journeyId: current._id, lessonId: lesson.id }); setNotice(result.message); } catch (err) { setError(err instanceof Error ? err.message : "Couldn't adapt upcoming lessons."); } finally { setBusy(false); } }}>Adapt upcoming lessons</button>}
                     </div>}
                   </article>;
                 })}
@@ -243,6 +253,18 @@ export default function HomePage() {
               {curriculum.limitations?.length ? <details className="limitations"><summary>About this learning plan</summary><ul>{curriculum.limitations.map((item, i) => <li key={i}>{item}</li>)}</ul></details> : null}
             </section>
           )}
+
+          {current && curriculum && <section className="next-journey-section">
+            <div className="section-kicker">WHEN THIS WEEK IS COMPLETE</div>
+            <h2>Keep the thread going.</h2>
+            <p className="week-rationale">Prepare a thoughtful continuation from your goals, progress, and the ideas that need more practice. Nothing changes until you choose it.</p>
+            {!nextProposal ? <button className="secondary-button" disabled={busy || nextProposal === undefined} onClick={async () => { setBusy(true); setError(""); try { await prepareNextJourney({ journeyId: current._id }); setNotice("A next journey is ready to review."); } catch (err) { setError(err instanceof Error ? err.message : "Couldn't prepare the next journey."); } finally { setBusy(false); } }}>{busy ? "Preparing a continuation…" : "Prepare my next journey"} <ArrowRight size={16} /></button> : <div className="proposal-card">
+              <div className="proposal-meta">{nextProposal.mode.toUpperCase()} · PREPARED FOR YOUR REVIEW</div>
+              <h3>{nextProposal.topic}</h3><p>{nextProposal.rationale}</p>
+              {nextProposal.plan?.lessons?.length ? <small>{nextProposal.plan.lessons.length}-day plan · {nextProposal.plan.lessons[0]?.estimatedMinutes ?? current.dailyMinutes} min/day</small> : null}
+              <div className="proposal-actions"><button className="primary-button" disabled={busy} onClick={async () => { setBusy(true); try { const id = await acceptJourneyProposal({ proposalId: nextProposal._id }); setActiveJourneyId(id); setNotice("Your next journey is ready. Keep going."); } catch (err) { setError(err instanceof Error ? err.message : "Couldn't start the next journey."); } finally { setBusy(false); } }}>Start this journey <ArrowRight size={16} /></button><button className="text-button" disabled={busy} onClick={() => rejectJourneyProposal({ proposalId: nextProposal._id })}>Not now</button></div>
+            </div>}
+          </section>}
 
           {!current && !isLoading && <section className="empty-state">
             <div className="empty-icon"><BookOpen size={26} /></div><h2>Your next great discovery starts here.</h2><p>Choose a subject you love, follow a recommendation, or let curiosity surprise you.</p>

@@ -40,7 +40,7 @@ h1, h2, h3, p { margin-top: 0; }
 .art-book { position: relative; z-index: 1; display: grid; place-items: center; width: 122px; height: 130px; color: var(--green); background: #fffdf4; border: 1px solid #d5d4c6; border-radius: 4px 12px 12px 4px; box-shadow: 9px 12px 0 #b5b8a4; transform: rotate(-7deg); }
 .art-caption { position: absolute; bottom: 28px; color: #747a6c; font-family: var(--serif); font-style: italic; font-size: 14px; }
 .current-week, .discovery-section, .history-section { padding: 42px 0; border-bottom: 1px solid var(--line); }
-.section-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.section-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
 .section-heading h2, .empty-state h2 { margin: 8px 0 0; font-family: var(--serif); font-size: 30px; font-weight: 400; letter-spacing: -.8px; }
 .progress-label, .small-muted { color: var(--muted); font-size: 12px; }
 .week-rationale { max-width: 760px; color: var(--muted); font-size: 13px; line-height: 1.65; margin: 12px 0 18px; }
@@ -132,3 +132,13 @@ textarea:focus, input:focus { border-color: #76927b; box-shadow: 0 0 0 3px #e8ee
 }
 
 .lesson-body { max-width: 760px; color: #505950; font-family: var(--serif); font-size: 17px; line-height: 1.8; white-space: pre-line; }
+.next-journey-section { padding: 42px 0; border-bottom: 1px solid var(--line); }
+.next-journey-section h2 { margin: 9px 0 8px; font-family: var(--serif); font-size: 30px; font-weight: 400; letter-spacing: -.8px; }
+.secondary-button { display: inline-flex; align-items: center; gap: 12px; min-height: 42px; padding: 0 15px; color: var(--green); background: transparent; border: 1px solid #aab9a7; border-radius: 7px; font-size: 12px; font-weight: 700; }
+.secondary-button:hover:not(:disabled) { background: var(--sage); }
+.proposal-card { max-width: 700px; padding: 21px; background: #f1f2e9; border: 1px solid #dfe5d8; border-radius: 8px; }
+.proposal-meta { color: var(--green); font-size: 9px; font-weight: 800; letter-spacing: .14em; }
+.proposal-card h3 { margin: 10px 0 8px; font-family: var(--serif); font-size: 24px; font-weight: 400; }
+.proposal-card p { margin: 0 0 8px; color: #5f665f; font-size: 13px; line-height: 1.65; }
+.proposal-card small { color: var(--muted); font-size: 11px; }
+.proposal-actions { display: flex; align-items: center; gap: 15px; margin-top: 17px; }

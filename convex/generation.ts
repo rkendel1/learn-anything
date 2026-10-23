@@ -2,7 +2,8 @@
 
 import { v } from "convex/values";
 import { action } from "./_generated/server";
-import { internal } from "./_generated/api";
+import { generateJson } from "./model";
+import { api, internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 
 type Knowledge = "new" | "some" | "experienced" | "expert";
@@ -21,33 +22,8 @@ type AdaptationContext = {
   evidence: Array<{ lessonId: string; kind: string; response: string; result: string; createdAt: number }>;
 } | null;
 
-async function askModel<T>(system: string, user: unknown, fallback: () => T): Promise<T> {
-  const key = process.env.OPENAI_API_KEY;
-  if (!key) return fallback();
-  const model = process.env.OPENAI_MODEL || "gpt-4.1-mini";
-  try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-      body: JSON.stringify({
-        model,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: JSON.stringify(user) }
-        ],
-        temperature: 0.4
-      })
-    });
-    if (!response.ok) throw new Error(`Model API returned ${response.status}`);
-    const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-    const content = payload.choices?.[0]?.message?.content;
-    if (!content) throw new Error("Model returned an empty response.");
-    return JSON.parse(content) as T;
-  } catch (error) {
-    console.error("Model generation failed; using safe fallback.", error);
-    return fallback();
-  }
+async function askModel<T>(system: string, user: unknown, fallback: () => T, operation: "routine" | "reasoning" = "routine"): Promise<{ value: T; usedFallback: boolean }> {
+  return generateJson({ system, input: user, fallback, operation });
 }
 
 function fallbackQuestions(topic: string) {
@@ -64,7 +40,7 @@ export const generateCalibration = action({
   handler: async (ctx, args): Promise<Array<{ id: string; prompt: string; concept: string; expectedAnswer: string }>> => {
     const journey: Doc<"journeys"> | null = await ctx.runQuery(internal.learn.getJourneyForGeneration, { journeyId: args.journeyId });
     if (!journey) throw new Error("Learning journey not found.");
-    const result: { questions: Array<{ id: string; prompt: string; concept: string; expectedAnswer: string }> } = await askModel<{ questions: Array<{ id: string; prompt: string; concept: string; expectedAnswer: string }> }>(
+    const result = (await askModel<{ questions: Array<{ id: string; prompt: string; concept: string; expectedAnswer: string }> }>(
       "Create exactly 2 friendly, low-pressure calibration questions for a personalized learning journey. Do not quiz the user on everything. Return JSON: { questions: [{ id, prompt, concept, expectedAnswer }] }. No markdown.",
       {
         topic: journey.topic,
@@ -74,7 +50,7 @@ export const generateCalibration = action({
         goal: journey.goal ?? null
       },
       () => fallbackQuestions(journey.topic)
-    );
+    )).value;
     const questions = Array.isArray(result.questions) && result.questions.length >= 1
       ? result.questions.slice(0, 4).map((q, i) => ({
           id: String(q.id || `q${i + 1}`),
@@ -210,11 +186,12 @@ export const generateCurriculum = action({
       goal: journey.goal ?? undefined,
       calibrationAnswers: journey.calibrationAnswers,
     };
-    const generated = await askModel<any>(
+    const generatedResult = await askModel<any>(
       `You are the curriculum planner for Learn Anything. Return only valid JSON conforming to this contract: schemaVersion "learn-anything.curriculum/1"; topic, title; scope {included:string[], excluded:string[], rationale:string}; learnerModel {declaredStartingKnowledge, desiredDepth, dailyMinutes, calibrationStatus:"completed", assumptions:string[]}; objectives [{id,statement,assessmentMethod,prerequisiteObjectiveIds:string[]}]; exactly 7 lessons [{id:"day1"..."day7",day,title,purpose,lessonBody:string (a concise, learner-facing explanation, not meta-instructions),objectiveIds:string[],prerequisiteIds:string[],estimatedMinutes,teachingFormat,contentOutline:string[],activities:[{type,prompt,objectiveIds:string[]}],assessmentIds:string[],sourceIds:string[]}]; assessments [{id,objectiveIds:string[],kind,prompt,rubric:[{criterion,expectedEvidence}],passingCriteria}]; sources:[]; totalEstimatedMinutes; completionCriteria:string[]; limitations:string[]. No invented sources or URLs. Each lesson's estimatedMinutes must be <= dailyMinutes. Objectives must be observable and assessments aligned. Distinguish the user's self-reported knowledge from demonstrated knowledge. ${journey.desiredDepth === "master" ? "Do not promise mastery in a week; define this as an initial phase toward measurable competencies." : ""} Return JSON only.`,
       input,
       () => fallbackCurriculum(input)
     );
+    const generated = generatedResult.value;
     // Normalize the user-specific fields regardless of model output.
     const curriculum = {
       ...generated,
@@ -237,7 +214,7 @@ export const generateCurriculum = action({
       limitations: [...fallbackCurriculum(input).limitations, `Model-generated draft failed validation and was replaced with a starter plan: ${errors.join("; ")}`]
     } : curriculum;
     await ctx.runMutation(internal.learn.publishCurriculum, { journeyId: args.journeyId, curriculum: finalCurriculum });
-    return { ok: true, usedFallback: errors.length > 0 || !process.env.OPENAI_API_KEY, curriculum: finalCurriculum };
+    return { ok: true, usedFallback: errors.length > 0 || generatedResult.usedFallback, curriculum: finalCurriculum };
   }
 });
 
@@ -257,11 +234,51 @@ export const recommendTopics = action({
             { topic: "Thinking in systems", reason: "A practical way to understand complex problems.", depth: "deep" }
           ]).filter((x) => !args.recentTopics.some((t) => t.toLowerCase() === x.topic.toLowerCase()))
     });
-    return await askModel<{ topics: Array<{ topic: string; reason: string; depth: string }> }>(
+    return (await askModel<{ topics: Array<{ topic: string; reason: string; depth: string }> }>(
       "Recommend three engaging learning topics. Return JSON {topics:[{topic,reason,depth}]}. Each topic must be distinct and not duplicate recent topics. For surprise mode, maximize productive novelty and avoid generic popular topics.",
       args,
       fallback
+    )).value;
+  }
+});
+
+export const prepareNextJourney = action({
+  args: { journeyId: v.id("journeys") },
+  handler: async (ctx, args): Promise<{ proposalId: string; topic: string; mode: string; rationale: string }> => {
+    const context = await ctx.runQuery(internal.learn.getNextJourneyContext, { journeyId: args.journeyId });
+    if (!context) throw new Error("Finish setting up this journey before preparing the next one.");
+    const existing = await ctx.runQuery(internal.learn.getPreparedProposal, { journeyId: args.journeyId });
+    if (existing) return { proposalId: String(existing._id), topic: existing.topic, mode: existing.mode, rationale: existing.rationale };
+    const fallback = { mode: "continue", topic: `The next step in ${context.topic}`, rationale: `You have started building a foundation in ${context.topic}; this continuation will deepen the ideas that still need practice.` } as const;
+    const suggestion = (await askModel<typeof fallback>(
+      "Suggest one next learning journey. Return JSON {mode:'continue'|'explore'|'discover',topic:string,rationale:string}. Ground it in the learner evidence, be concise, and do not claim mastery.", context,
+      () => fallback, "reasoning"
+    )).value;
+    const mode = ["continue", "explore", "discover"].includes(suggestion.mode) ? suggestion.mode as "continue" | "explore" | "discover" : fallback.mode;
+    const topic = String(suggestion.topic || fallback.topic).slice(0, 160);
+    const rationale = String(suggestion.rationale || fallback.rationale).slice(0, 500);
+    const input = { topic, startingKnowledge: "some" as Knowledge, desiredDepth: context.desiredDepth as Depth, dailyMinutes: context.dailyMinutes, goal: context.goal ?? undefined };
+    const planResult = await askModel<any>(
+      "Create a validated seven-day continuation plan using the same curriculum contract. Keep the learner's time budget and depth. Do not promise mastery.", input,
+      () => fallbackCurriculum(input)
     );
+    const plan = planResult.value;
+    const proposalId = await ctx.runMutation(internal.learn.saveJourneyProposal, { sourceJourneyId: args.journeyId, topic, mode, rationale, plan });
+    return { proposalId: String(proposalId), topic, mode, rationale };
+  }
+});
+
+export const evaluateAnswer = action({
+  args: { journeyId: v.id("journeys"), lessonId: v.string(), response: v.string() },
+  handler: async (ctx, args): Promise<{ result: string; feedback: string; objective: string }> => {
+    const context: AdaptationContext = await ctx.runQuery(internal.learn.getAdaptationContext, { journeyId: args.journeyId, lessonId: args.lessonId });
+    if (!context) throw new Error("Couldn't find the lesson.");
+    const lesson = context.curriculum.lessons?.[context.currentLessonIndex] ?? {};
+    const fallback = { result: args.response.trim().length > 20 ? "developing" : "needs_practice", objective: String(lesson.objectiveIds?.[0] ?? "core understanding"), feedback: args.response.trim().length > 20 ? "You made a meaningful attempt. Revisit the key idea, then add one concrete example to make your explanation stronger." : "Start with one clear sentence about the main idea, then add an example or reason." };
+    const evaluationResult = await askModel<typeof fallback>("Evaluate a learner answer objectively. Return JSON {result:'clear_understanding'|'developing'|'needs_practice', objective:string, feedback:string}. Tie feedback to the lesson objective. Do not claim mastery.", { lesson, response: args.response }, () => fallback);
+    const evaluation = evaluationResult.value;
+    await ctx.runMutation(api.learn.saveAssessment, { journeyId: args.journeyId, lessonId: args.lessonId, response: args.response, result: JSON.stringify(evaluation) });
+    return evaluation;
   }
 });
 
@@ -281,12 +298,12 @@ export const adaptUpcomingLessons = action({
       return { ok: true, changed: 0, message: "There are no upcoming lessons left to adapt." };
     }
 
-    const adapted = await askModel<Array<any>>(
+    const adaptedResult = await askModel<{ lessons: Array<any> }>(
       `You adapt upcoming lessons based on learner evidence. Return JSON { lessons: [...] } using the same lesson schema (id, day, title, purpose, lessonBody, objectiveIds, prerequisiteIds, estimatedMinutes, teachingFormat, contentOutline, activities, assessmentIds, sourceIds). Only change future lessons; preserve ids and day numbers. Reframe difficulty and examples based on the evidence.`,
       { journey: { topic: context.topic, desiredDepth: context.desiredDepth, startingKnowledge: context.startingKnowledge, dailyMinutes: context.dailyMinutes }, futureLessons, evidence: context.evidence },
-      () => futureLessons
+      () => ({ lessons: futureLessons })
     );
-
+    const adapted = Array.isArray(adaptedResult.value?.lessons) ? adaptedResult.value.lessons : futureLessons;
     const changed = adapted.length;
     const updatedCurriculum = {
       ...context.curriculum,
@@ -301,6 +318,6 @@ export const adaptUpcomingLessons = action({
       curriculum: updatedCurriculum
     });
 
-    return { ok: true, usedFallback: !process.env.OPENAI_API_KEY, changed, message: `Adapted ${changed} upcoming lesson(s).` };
+    return { ok: true, usedFallback: adaptedResult.usedFallback, changed, message: `Adapted ${changed} upcoming lesson(s).` };
   }
 });

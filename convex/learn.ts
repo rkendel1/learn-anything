@@ -137,16 +137,79 @@ export const markLessonComplete = mutation({
   }
 });
 
+export const getJourneyProposal = query({
+  args: { journeyId: v.id("journeys") },
+  handler: async (ctx, args) => await ctx.db.query("journeyProposals")
+    .withIndex("by_source_status", (q) => q.eq("sourceJourneyId", args.journeyId).eq("status", "prepared"))
+    .order("desc").first()
+});
+
+export const acceptJourneyProposal = mutation({
+  args: { proposalId: v.id("journeyProposals") },
+  handler: async (ctx, args) => {
+    const proposal = await ctx.db.get(args.proposalId);
+    if (!proposal || proposal.status !== "prepared") throw new Error("This journey proposal is no longer available.");
+    const now = Date.now();
+    const journeyId = await ctx.db.insert("journeys", {
+      topic: proposal.topic,
+      startingKnowledge: "some",
+      desiredDepth: proposal.plan.learnerModel?.desiredDepth ?? "understand",
+      dailyMinutes: proposal.plan.learnerModel?.dailyMinutes ?? 10,
+      status: "active",
+      completedLessonIds: [],
+      createdAt: now,
+      updatedAt: now
+    });
+    await ctx.db.insert("curriculumVersions", { journeyId, version: 1, status: "published", curriculum: proposal.plan, createdAt: now });
+    await ctx.db.patch(args.proposalId, { status: "accepted", updatedAt: now });
+    return journeyId;
+  }
+});
+
+export const rejectJourneyProposal = mutation({
+  args: { proposalId: v.id("journeyProposals") },
+  handler: async (ctx, args) => {
+    const proposal = await ctx.db.get(args.proposalId);
+    if (proposal?.status === "prepared") await ctx.db.patch(args.proposalId, { status: "rejected", updatedAt: Date.now() });
+  }
+});
+
 export const saveLessonResponse = mutation({
   args: { journeyId: v.id("journeys"), lessonId: v.string(), response: v.string() },
   handler: async (ctx, args) => {
-    await ctx.db.insert("learningEvidence", {
-      journeyId: args.journeyId,
-      lessonId: args.lessonId,
-      kind: "lesson_response",
-      response: args.response,
-      createdAt: Date.now()
-    });
+    await ctx.db.insert("learningEvidence", { journeyId: args.journeyId, lessonId: args.lessonId, kind: "lesson_response", response: args.response, createdAt: Date.now() });
+  }
+});
+
+export const saveAssessment = mutation({
+  args: { journeyId: v.id("journeys"), lessonId: v.string(), response: v.string(), result: v.string() },
+  handler: async (ctx, args) => {
+    await ctx.db.insert("learningEvidence", { journeyId: args.journeyId, lessonId: args.lessonId, kind: "assessment", response: args.response, result: args.result, createdAt: Date.now() });
+  }
+});
+
+export const getNextJourneyContext = internalQuery({
+  args: { journeyId: v.id("journeys") },
+  handler: async (ctx, args) => {
+    const journey = await ctx.db.get(args.journeyId);
+    if (!journey) return null;
+    const evidence = await ctx.db.query("learningEvidence").withIndex("by_journey", (q) => q.eq("journeyId", args.journeyId)).order("desc").take(40);
+    const latest = await ctx.db.query("curriculumVersions").withIndex("by_journey_version", (q) => q.eq("journeyId", args.journeyId)).order("desc").first();
+    return { topic: journey.topic, goal: journey.goal ?? null, desiredDepth: journey.desiredDepth, dailyMinutes: journey.dailyMinutes, completedLessonIds: journey.completedLessonIds, curriculum: latest?.curriculum ?? null, evidence: evidence.map((item) => ({ kind: item.kind, lessonId: item.lessonId, response: item.response ?? "", result: item.result ?? "" })) };
+  }
+});
+
+export const getPreparedProposal = internalQuery({
+  args: { journeyId: v.id("journeys") },
+  handler: async (ctx, args) => await ctx.db.query("journeyProposals").withIndex("by_source_status", (q) => q.eq("sourceJourneyId", args.journeyId).eq("status", "prepared")).order("desc").first()
+});
+
+export const saveJourneyProposal = internalMutation({
+  args: { sourceJourneyId: v.id("journeys"), topic: v.string(), mode: v.union(v.literal("continue"), v.literal("explore"), v.literal("discover")), rationale: v.string(), plan: v.any() },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db.query("journeyProposals").withIndex("by_source_status", (q) => q.eq("sourceJourneyId", args.sourceJourneyId).eq("status", "prepared")).first();
+    if (existing) return existing._id;
+    return await ctx.db.insert("journeyProposals", { ...args, status: "prepared", createdAt: Date.now(), updatedAt: Date.now() });
   }
 });
 

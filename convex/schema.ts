@@ -43,6 +43,17 @@ export default defineSchema({
     kind: v.string(),
     response: v.optional(v.string()),
     result: v.optional(v.string()),
-    createdAt: v.number()
-  }).index("by_journey", ["journeyId"])
+    createdAt: v.number(),
+    idempotencyKey: v.optional(v.string())
+  }).index("by_journey", ["journeyId"]).index("by_idempotency", ["journeyId", "idempotencyKey"]),
+  journeyProposals: defineTable({
+    sourceJourneyId: v.id("journeys"),
+    topic: v.string(),
+    mode: v.union(v.literal("continue"), v.literal("explore"), v.literal("discover")),
+    rationale: v.string(),
+    plan: v.any(),
+    status: v.union(v.literal("prepared"), v.literal("accepted"), v.literal("rejected")),
+    createdAt: v.number(),
+    updatedAt: v.number()
+  }).index("by_source_status", ["sourceJourneyId", "status"])
 });
