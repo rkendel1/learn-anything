@@ -1,8 +1,9 @@
 "use node";
 
 import { v } from "convex/values";
+import { generateText, gateway } from "ai";
 import { action } from "./_generated/server";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 
 type Knowledge = "new" | "some" | "experienced" | "expert";
@@ -22,30 +23,18 @@ type AdaptationContext = {
 } | null;
 
 async function askModel<T>(system: string, user: unknown, fallback: () => T): Promise<T> {
-  const key = process.env.OPENAI_API_KEY;
-  if (!key) return fallback();
-  const model = process.env.OPENAI_MODEL || "gpt-4.1-mini";
   try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-      body: JSON.stringify({
-        model,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: JSON.stringify(user) }
-        ],
-        temperature: 0.4
-      })
+    const result = await generateText({
+      model: gateway(process.env.AI_MODEL || "openai/o4-mini"),
+      system,
+      prompt: JSON.stringify(user),
+      temperature: 0.2,
+      maxOutputTokens: 8000,
     });
-    if (!response.ok) throw new Error(`Model API returned ${response.status}`);
-    const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-    const content = payload.choices?.[0]?.message?.content;
-    if (!content) throw new Error("Model returned an empty response.");
-    return JSON.parse(content) as T;
+    const text = result.text.trim().replace(/^```json\\s*|\\s*```$/g, "");
+    return JSON.parse(text) as T;
   } catch (error) {
-    console.error("Model generation failed; using safe fallback.", error);
+    console.error("[v0] Model generation failed; using safe fallback.", error);
     return fallback();
   }
 }
@@ -262,6 +251,19 @@ export const recommendTopics = action({
       args,
       fallback
     );
+  }
+});
+
+export const evaluateAnswer = action({
+  args: { journeyId: v.id("journeys"), lessonId: v.string(), response: v.string() },
+  handler: async (ctx, args): Promise<{ result: string; feedback: string; objective: string }> => {
+    const context: AdaptationContext = await ctx.runQuery(internal.learn.getAdaptationContext, { journeyId: args.journeyId, lessonId: args.lessonId });
+    if (!context) throw new Error("Couldn't find the lesson.");
+    const lesson = context.curriculum.lessons?.[context.currentLessonIndex] ?? {};
+    const fallback = { result: args.response.trim().length > 20 ? "developing" : "needs_practice", objective: String(lesson.objectiveIds?.[0] ?? "core understanding"), feedback: args.response.trim().length > 20 ? "You made a meaningful attempt. Revisit the key idea, then add one concrete example to make your explanation stronger." : "Start with one clear sentence about the main idea, then add an example or reason." };
+    const evaluation = await askModel<typeof fallback>("Evaluate a learner answer objectively. Return JSON {result:'clear_understanding'|'developing'|'needs_practice', objective:string, feedback:string}. Tie feedback to the lesson objective. Do not claim mastery.", { lesson, response: args.response }, () => fallback);
+    await ctx.runMutation(api.learn.saveAssessment, { journeyId: args.journeyId, lessonId: args.lessonId, response: args.response, result: JSON.stringify(evaluation) });
+    return evaluation;
   }
 });
 

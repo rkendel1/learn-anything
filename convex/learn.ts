@@ -140,13 +140,14 @@ export const markLessonComplete = mutation({
 export const saveLessonResponse = mutation({
   args: { journeyId: v.id("journeys"), lessonId: v.string(), response: v.string() },
   handler: async (ctx, args) => {
-    await ctx.db.insert("learningEvidence", {
-      journeyId: args.journeyId,
-      lessonId: args.lessonId,
-      kind: "lesson_response",
-      response: args.response,
-      createdAt: Date.now()
-    });
+    await ctx.db.insert("learningEvidence", { journeyId: args.journeyId, lessonId: args.lessonId, kind: "lesson_response", response: args.response, createdAt: Date.now() });
+  }
+});
+
+export const saveAssessment = mutation({
+  args: { journeyId: v.id("journeys"), lessonId: v.string(), response: v.string(), result: v.string() },
+  handler: async (ctx, args) => {
+    await ctx.db.insert("learningEvidence", { journeyId: args.journeyId, lessonId: args.lessonId, kind: "assessment", response: args.response, result: args.result, createdAt: Date.now() });
   }
 });
 
