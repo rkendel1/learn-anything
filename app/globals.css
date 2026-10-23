@@ -40,7 +40,7 @@ h1, h2, h3, p { margin-top: 0; }
 .art-book { position: relative; z-index: 1; display: grid; place-items: center; width: 122px; height: 130px; color: var(--green); background: #fffdf4; border: 1px solid #d5d4c6; border-radius: 4px 12px 12px 4px; box-shadow: 9px 12px 0 #b5b8a4; transform: rotate(-7deg); }
 .art-caption { position: absolute; bottom: 28px; color: #747a6c; font-family: var(--serif); font-style: italic; font-size: 14px; }
 .current-week, .discovery-section, .history-section { padding: 42px 0; border-bottom: 1px solid var(--line); }
-.section-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.section-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
 .section-heading h2, .empty-state h2 { margin: 8px 0 0; font-family: var(--serif); font-size: 30px; font-weight: 400; letter-spacing: -.8px; }
 .progress-label, .small-muted { color: var(--muted); font-size: 12px; }
 .week-rationale { max-width: 760px; color: var(--muted); font-size: 13px; line-height: 1.65; margin: 12px 0 18px; }
