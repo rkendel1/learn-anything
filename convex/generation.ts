@@ -242,6 +242,32 @@ export const recommendTopics = action({
   }
 });
 
+export const prepareNextJourney = action({
+  args: { journeyId: v.id("journeys") },
+  handler: async (ctx, args): Promise<{ proposalId: string; topic: string; mode: string; rationale: string }> => {
+    const context = await ctx.runQuery(internal.learn.getNextJourneyContext, { journeyId: args.journeyId });
+    if (!context) throw new Error("Finish setting up this journey before preparing the next one.");
+    const existing = await ctx.runQuery(internal.learn.getPreparedProposal, { journeyId: args.journeyId });
+    if (existing) return { proposalId: String(existing._id), topic: existing.topic, mode: existing.mode, rationale: existing.rationale };
+    const fallback = { mode: "continue", topic: `The next step in ${context.topic}`, rationale: `You have started building a foundation in ${context.topic}; this continuation will deepen the ideas that still need practice.` } as const;
+    const suggestion = (await askModel<typeof fallback>(
+      "Suggest one next learning journey. Return JSON {mode:'continue'|'explore'|'discover',topic:string,rationale:string}. Ground it in the learner evidence, be concise, and do not claim mastery.", context,
+      () => fallback, "reasoning"
+    )).value;
+    const mode = ["continue", "explore", "discover"].includes(suggestion.mode) ? suggestion.mode as "continue" | "explore" | "discover" : fallback.mode;
+    const topic = String(suggestion.topic || fallback.topic).slice(0, 160);
+    const rationale = String(suggestion.rationale || fallback.rationale).slice(0, 500);
+    const input = { topic, startingKnowledge: "some" as Knowledge, desiredDepth: context.desiredDepth as Depth, dailyMinutes: context.dailyMinutes, goal: context.goal ?? undefined };
+    const planResult = await askModel<any>(
+      "Create a validated seven-day continuation plan using the same curriculum contract. Keep the learner's time budget and depth. Do not promise mastery.", input,
+      () => fallbackCurriculum(input)
+    );
+    const plan = planResult.value;
+    const proposalId = await ctx.runMutation(internal.learn.saveJourneyProposal, { sourceJourneyId: args.journeyId, topic, mode, rationale, plan });
+    return { proposalId: String(proposalId), topic, mode, rationale };
+  }
+});
+
 export const evaluateAnswer = action({
   args: { journeyId: v.id("journeys"), lessonId: v.string(), response: v.string() },
   handler: async (ctx, args): Promise<{ result: string; feedback: string; objective: string }> => {
