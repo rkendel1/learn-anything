@@ -3,6 +3,7 @@
 import { v } from "convex/values";
 import { action } from "./_generated/server";
 import { generateJson } from "./model";
+import { createLearningContent } from "./curriculumAgent";
 import { api, internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 
@@ -155,29 +156,13 @@ function fallbackCurriculum(input: {
   };
 }
 
-function validateCurriculum(c: any, journey: any) {
-  const errors: string[] = [];
-  if (c?.schemaVersion !== "learn-anything.curriculum/1") errors.push("Invalid schema version");
-  if (!Array.isArray(c?.lessons) || c.lessons.length !== 7) errors.push("Curriculum must contain seven lessons");
-  if (!Array.isArray(c?.objectives) || c.objectives.length < 2) errors.push("At least two objectives are required");
-  if (!Array.isArray(c?.assessments) || c.assessments.length < 1) errors.push("At least one assessment is required");
-  if (c?.learnerModel?.desiredDepth !== journey.desiredDepth) errors.push("Depth does not match journey");
-  if (c?.learnerModel?.dailyMinutes !== journey.dailyMinutes) errors.push("Time budget does not match journey");
-  if (Array.isArray(c?.lessons)) {
-    for (const lesson of c.lessons) {
-      if (!lesson.id || !lesson.title || !lesson.purpose || !Number.isFinite(lesson.estimatedMinutes)) errors.push("A lesson is missing required fields");
-      if (lesson.estimatedMinutes > journey.dailyMinutes) errors.push(`Lesson ${lesson.id} exceeds the daily time budget`);
-    }
-  }
-  return errors;
-}
-
 export const generateCurriculum = action({
   args: { journeyId: v.id("journeys") },
   handler: async (ctx, args): Promise<{ ok: boolean; usedFallback: boolean; curriculum: Record<string, unknown> }> => {
     const journey: Doc<"journeys"> | null = await ctx.runQuery(internal.learn.getJourneyForGeneration, { journeyId: args.journeyId });
     if (!journey) throw new Error("Learning journey not found.");
     if (!journey.calibrationAnswers) throw new Error("Complete the calibration questions first.");
+    if (journey.completedLessonIds.length) throw new Error("Cannot regenerate a journey after lessons have been completed.");
     const input: Parameters<typeof fallbackCurriculum>[0] = {
       topic: journey.topic,
       startingKnowledge: journey.startingKnowledge as Knowledge,
@@ -186,35 +171,20 @@ export const generateCurriculum = action({
       goal: journey.goal ?? undefined,
       calibrationAnswers: journey.calibrationAnswers,
     };
-    const generatedResult = await askModel<any>(
-      `You are the curriculum planner for Learn Anything. Return only valid JSON conforming to this contract: schemaVersion "learn-anything.curriculum/1"; topic, title; scope {included:string[], excluded:string[], rationale:string}; learnerModel {declaredStartingKnowledge, desiredDepth, dailyMinutes, calibrationStatus:"completed", assumptions:string[]}; objectives [{id,statement,assessmentMethod,prerequisiteObjectiveIds:string[]}]; exactly 7 lessons [{id:"day1"..."day7",day,title,purpose,lessonBody:string (a concise, learner-facing explanation, not meta-instructions),objectiveIds:string[],prerequisiteIds:string[],estimatedMinutes,teachingFormat,contentOutline:string[],activities:[{type,prompt,objectiveIds:string[]}],assessmentIds:string[],sourceIds:string[]}]; assessments [{id,objectiveIds:string[],kind,prompt,rubric:[{criterion,expectedEvidence}],passingCriteria}]; sources:[]; totalEstimatedMinutes; completionCriteria:string[]; limitations:string[]. No invented sources or URLs. Each lesson's estimatedMinutes must be <= dailyMinutes. Objectives must be observable and assessments aligned. Distinguish the user's self-reported knowledge from demonstrated knowledge. ${journey.desiredDepth === "master" ? "Do not promise mastery in a week; define this as an initial phase toward measurable competencies." : ""} Return JSON only.`,
-      input,
-      () => fallbackCurriculum(input)
-    );
-    const generated = generatedResult.value;
-    // Normalize the user-specific fields regardless of model output.
-    const curriculum = {
-      ...generated,
-      schemaVersion: "learn-anything.curriculum/1",
-      topic: journey.topic,
-      learnerModel: {
-        ...(generated.learnerModel ?? {}),
-        declaredStartingKnowledge: journey.startingKnowledge,
-        desiredDepth: journey.desiredDepth,
-        dailyMinutes: journey.dailyMinutes,
-        calibrationStatus: "completed"
-      },
-      lessons: (Array.isArray(generated.lessons) ? generated.lessons : fallbackCurriculum(input).lessons).map((lesson: any, i: number) => ({ ...lesson, lessonBody: typeof lesson.lessonBody === "string" && lesson.lessonBody.trim() ? lesson.lessonBody : (fallbackCurriculum(input).lessons[i]?.lessonBody ?? `Today we will explore ${journey.topic} through a focused example.`) })),
-      sources: Array.isArray(generated.sources) ? generated.sources : [],
-      totalEstimatedMinutes: journey.dailyMinutes * 7
-    };
-    const errors = validateCurriculum(curriculum, journey);
-    const finalCurriculum: Record<string, unknown> = errors.length ? {
-      ...fallbackCurriculum(input),
-      limitations: [...fallbackCurriculum(input).limitations, `Model-generated draft failed validation and was replaced with a starter plan: ${errors.join("; ")}`]
-    } : curriculum;
+    let usedFallback = false;
+    let finalCurriculum: Record<string, unknown>;
+    try {
+      finalCurriculum = await createLearningContent(input);
+    } catch {
+      usedFallback = true;
+      const starter = fallbackCurriculum(input);
+      finalCurriculum = {
+        ...starter,
+        limitations: ["AI content generation was unavailable or failed validation. This is a starter outline, not a generated course. Retry generation when the backend model is configured.", ...starter.limitations],
+      };
+    }
     await ctx.runMutation(internal.learn.publishCurriculum, { journeyId: args.journeyId, curriculum: finalCurriculum });
-    return { ok: true, usedFallback: errors.length > 0 || generatedResult.usedFallback, curriculum: finalCurriculum };
+    return { ok: true, usedFallback, curriculum: finalCurriculum };
   }
 });
 
@@ -258,11 +228,8 @@ export const prepareNextJourney = action({
     const topic = String(suggestion.topic || fallback.topic).slice(0, 160);
     const rationale = String(suggestion.rationale || fallback.rationale).slice(0, 500);
     const input = { topic, startingKnowledge: "some" as Knowledge, desiredDepth: context.desiredDepth as Depth, dailyMinutes: context.dailyMinutes, goal: context.goal ?? undefined };
-    const planResult = await askModel<any>(
-      "Create a validated seven-day continuation plan using the same curriculum contract. Keep the learner's time budget and depth. Do not promise mastery.", input,
-      () => fallbackCurriculum(input)
-    );
-    const plan = planResult.value;
+    // A continuation uses the same validated planning and content-writing pipeline.
+    const plan = await createLearningContent(input);
     const proposalId = await ctx.runMutation(internal.learn.saveJourneyProposal, { sourceJourneyId: args.journeyId, topic, mode, rationale, plan });
     return { proposalId: String(proposalId), topic, mode, rationale };
   }

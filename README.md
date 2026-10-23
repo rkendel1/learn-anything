@@ -6,7 +6,7 @@ A working MVP scaffold for a personal learning companion. Users can choose any t
 
 - Next.js + React + TypeScript
 - Convex for persistent journeys, curriculum versions, and learning evidence
-- OpenAI-compatible Chat Completions API for optional personalized generation
+- AI SDK + Vercel AI Gateway for structured planning and lesson writing
 - Deterministic fallback generation so the app remains demonstrable before adding an API key
 
 ## Run it
@@ -43,14 +43,27 @@ Requirements: Node.js 20.9+ and an npm account-free local development environmen
 
    Open http://localhost:3000.
 
-5. Optional: enable AI-powered generation by setting the key in the **Convex deployment environment** (not only in `.env.local`):
+5. Enable the backend agent in the **Convex deployment environment**, not just the Next.js/Vercel environment:
 
    ```bash
-   npx convex env set OPENAI_API_KEY your_key
-   npx convex env set OPENAI_MODEL gpt-4.1-mini
+   npx convex env set AI_GATEWAY_API_KEY
+   npx convex env set AI_MODEL openai/o4-mini
+   npx convex env set AI_REASONING_MODEL openai/o4-mini
    ```
 
-   The fallback mode still lets you exercise the complete product flow without a model key. Fallback curricula are clearly marked as starter plans and have no verified sources.
+   The first command prompts for the secret so it does not appear in shell history. Model overrides are optional. Use `--prod` for the production Convex deployment. The key is read only by server-side actions. See [AI Gateway authentication](https://vercel.com/docs/ai-gateway/authentication-and-byok).
+
+6. Deploy the Convex functions with `npx convex deploy` before releasing the updated web app. Deploying Next.js alone does not publish Convex code. Keep `NEXT_PUBLIC_CONVEX_URL` pointed at the corresponding Convex deployment.
+
+## Backend content agent
+
+After calibration, the agent first builds a structured seven-day curriculum from the requested topic, knowledge level, depth, daily time budget, goal, and answers. A separate writer then produces each lesson's actual teaching text, worked example, and practice activity using the full week for context. Only the complete course is published through the existing curriculum-version mutation.
+
+Both stages use schema-validated AI SDK outputs. Additional checks reject missing or duplicate ids, broken objective/assessment references, future lesson prerequisites, incorrect totals, and time-budget violations. Continuation journeys use the same pipeline. Sources are deliberately empty: this is not a retrieval or fact-checking agent.
+
+Generation makes eight sequential model requests and can take several minutes. Calls are cancellable and have bounded retries/timeouts. On initial-course failure, the app explicitly labels the deterministic starter outline instead of presenting it as AI-written teaching content. Use **Regenerate learning content** before completing any lessons to retry; regeneration is disabled once progress exists. A failed continuation does not publish a partial proposal.
+
+Run `npm test`, `npm run typecheck`, and `npm run build`. Tests cover contract validation and the planner/writer orchestration using mock models; they do not make billable model calls. A live end-to-end check requires a configured Convex deployment and AI Gateway key.
 
 ## Current working flow
 
@@ -66,7 +79,7 @@ Requirements: Node.js 20.9+ and an npm account-free local development environmen
 
 - This is a **single-user prototype**. It has no sign-in or per-user authorization yet. Do not expose its Convex deployment publicly or use it for sensitive data until authentication and ownership checks are added.
 - The MVP validator checks schema-critical fields, lesson count, depth/time consistency, and lesson time limits. It is not a substitute for robust source retrieval, factual verification, or pedagogical review.
-- OpenAI generation is optional. Without a key, the application uses deterministic fallback content.
+- AI generation is optional. Without a working backend key, initial journeys show a labeled starter outline; generating a continuation requires the model.
 - The source retrieval pipeline, formal assessment scoring, mid-week curriculum versioning UI, and scheduled preparation of the next week are not implemented yet.
 - The UI is a real interaction scaffold, not a production-ready accessibility or security audit.
 

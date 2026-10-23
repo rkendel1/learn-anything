@@ -91,11 +91,11 @@ export default function HomePage() {
     setBusy(true); setError(""); setNotice("");
     try {
       await submitCalibration({ journeyId: activeJourneyId, answers });
-      await generateCurriculum({ journeyId: activeJourneyId });
+      const result = await generateCurriculum({ journeyId: activeJourneyId });
       setStep("home");
       setTopic("");
       setGoal("");
-      setNotice("Your learning week is ready. Let's begin.");
+      setNotice(result.usedFallback ? "AI generation is unavailable. A starter outline is ready; you can retry to generate the full lessons." : "Your learning week is ready. Let's begin.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't prepare your curriculum.");
     } finally { setBusy(false); }
@@ -227,6 +227,14 @@ export default function HomePage() {
                 <span className="progress-label">{completed} of {curriculum.lessons.length} days</span>
               </div>
               <p className="week-rationale">{curriculum.scope?.rationale}</p>
+              <button className="text-button" disabled={busy || completed > 0} onClick={async () => {
+                setBusy(true); setError("");
+                try {
+                  const result = await generateCurriculum({ journeyId: current._id });
+                  setNotice(result.usedFallback ? "AI generation is still unavailable. Showing a starter outline." : "Your full learning content is ready.");
+                } catch (err) { setError(err instanceof Error ? err.message : "Couldn't generate learning content."); }
+                finally { setBusy(false); }
+              }}>{busy ? "Generating learning content…" : "Regenerate learning content"}</button>
               <div className="progress-track"><span style={{ width: `${Math.min(100, completed / Math.max(1, curriculum.lessons.length) * 100)}%` }} /></div>
               <div className="lesson-list">
                 {curriculum.lessons.map((lesson) => {
