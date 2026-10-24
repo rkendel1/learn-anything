@@ -1,24 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { MockLanguageModelV4 } from "ai/test";
-import { createLearningContent, validatePlan, type Curriculum, type LearnerInput } from "../convex/curriculumAgent";
+import { createLearningContent, validatePlan, type Curriculum } from "../convex/curriculumAgent";
 
-const input: LearnerInput = { topic: "Fractions", startingKnowledge: "new", desiredDepth: "understand", dailyMinutes: 10 };
-function fixture(): Curriculum {
-  return {
-    schemaVersion: "learn-anything.curriculum/1", topic: input.topic, title: "A week of fractions",
-    scope: { included: ["Fractions"], excluded: [], rationale: "Build from equal parts to addition." },
-    learnerModel: { declaredStartingKnowledge: "new", desiredDepth: "understand", dailyMinutes: 10, calibrationStatus: "completed", assumptions: [] },
-    objectives: ["parts", "addition"].map(id => ({ id, statement: `Explain ${id}`, assessmentMethod: "Worked example", prerequisiteObjectiveIds: [] })),
-    lessons: Array.from({ length: 7 }, (_, i) => ({
-      id: `day${i + 1}`, day: i + 1, title: "Equal parts", purpose: "Understand equal parts", lessonBody: "One half describes one of two equal parts of a whole.",
-      objectiveIds: ["parts"], prerequisiteIds: i ? [`day${i}`] : [], estimatedMinutes: 10, teachingFormat: "worked_example",
-      contentOutline: ["Equal parts"], activities: [{ type: "practice", prompt: "Split a circle into two equal parts.", objectiveIds: ["parts"] }], assessmentIds: ["check"], sourceIds: [],
-    })),
-    assessments: [{ id: "check", objectiveIds: ["parts"], kind: "application", prompt: "Draw one half", rubric: [{ criterion: "Equal parts", expectedEvidence: "Two equal parts" }], passingCriteria: "Correct division" }],
-    sources: [], totalEstimatedMinutes: 70, completionCriteria: ["Complete lessons"], limitations: ["Not independently verified"],
-  };
-}
+import { input, fixture } from "./fixtures";
 test("accepts a complete, connected seven-day course", () => {
   assert.deepEqual(validatePlan(fixture(), input), fixture());
 });
@@ -55,7 +40,8 @@ function response(value: unknown) {
 test("plans once and writes all seven lessons without changing their structure", async () => {
   const planner = new MockLanguageModelV4({ doGenerate: response(fixture()) });
   const body = "A fraction describes equal parts of one whole. In 1/2, the bottom number tells you there are two equal parts and the top number tells you to take one. For example, split a pizza equally between two people: each receives one half. Unequal slices do not represent halves.";
-  const writer = new MockLanguageModelV4({ doGenerate: response({ lessonBody: body, activities: fixture().lessons[0].activities }) });
+  let written = 0;
+  const writer = new MockLanguageModelV4({ doGenerate: async () => response({ lessonBody: body, activities: fixture().lessons[written++].activities }) });
   const plan = await createLearningContent(input, { planner, writer });
   assert.equal(planner.doGenerateCalls.length, 1);
   assert.equal(writer.doGenerateCalls.length, 7);

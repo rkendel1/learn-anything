@@ -1,23 +1,25 @@
 "use client";
 
+import { LearningProgress, LessonAssessment } from "./learning-loop";
+import type { Curriculum } from "../convex/learningCore";
 import { FormEvent, useMemo, useState } from "react";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "../convex/_generated/api";
 import { Id } from "../convex/_generated/dataModel";
-import { ArrowRight, BookOpen, Check, Compass, Lightbulb, Sparkles, Clock3, RotateCcw } from "lucide-react";
+import { ArrowRight, BookOpen, Check, Compass, Lightbulb, Sparkles, Clock3 } from "lucide-react";
 
 type Knowledge = "new" | "some" | "experienced" | "expert";
 type Depth = "explore" | "understand" | "deep" | "master";
 type Question = { id: string; prompt: string; concept: string; expectedAnswer?: string };
 type Lesson = {
   id: string; day: number; title: string; purpose: string; estimatedMinutes: number;
-  lessonBody?: string; contentOutline: string[]; activities: { type: string; prompt: string }[];
+  lessonBody?: string; contentOutline: string[]; activities: { type: string; prompt: string }[]; objectiveIds: string[]; assessmentIds: string[];
 };
 type Journey = {
   _id: Id<"journeys">; topic: string; startingKnowledge: Knowledge; desiredDepth: Depth;
   dailyMinutes: number; goal?: string; status: string; calibrationQuestions?: Question[];
   calibrationAnswers?: Record<string, string>; completedLessonIds: string[];
-  curriculum?: { title: string; scope: { rationale: string }; objectives: { id: string; statement: string }[]; lessons: Lesson[]; limitations?: string[]; totalEstimatedMinutes: number };
+  curriculum?: { assessments: Curriculum["assessments"]; title: string; scope: { rationale: string }; objectives: { id: string; statement: string }[]; lessons: Lesson[]; limitations?: string[]; totalEstimatedMinutes: number };
 };
 
 const knowledgeOptions: { value: Knowledge; label: string; desc: string }[] = [
@@ -32,17 +34,16 @@ const depthOptions: { value: Depth; label: string; desc: string }[] = [
   { value: "deep", label: "Go deep", desc: "Explore nuance and mechanisms" },
   { value: "master", label: "Master it", desc: "Practice toward real competence" }
 ];
-const surpriseTopics = ["The hidden mathematics of music", "How cities shape human behavior", "Why maps distort the world"];
 
 export default function HomePage() {
   const journeys = useQuery(api.learn.listJourneys, {}) as Journey[] | undefined;
   const createJourney = useMutation(api.learn.createJourney);
   const submitCalibration = useMutation(api.learn.submitCalibration);
+  const startLesson = useMutation(api.learn.startLesson);
   const markLessonComplete = useMutation(api.learn.markLessonComplete);
   const generateCalibration = useAction(api.generation.generateCalibration);
   const generateCurriculum = useAction(api.generation.generateCurriculum);
   const recommendTopics = useAction(api.generation.recommendTopics);
-  const evaluateAnswer = useAction(api.generation.evaluateAnswer);
   const adaptUpcomingLessons = useAction(api.generation.adaptUpcomingLessons);
   const prepareNextJourney = useAction(api.generation.prepareNextJourney);
   const acceptJourneyProposal = useMutation(api.learn.acceptJourneyProposal);
@@ -53,6 +54,7 @@ export default function HomePage() {
   const [depth, setDepth] = useState<Depth>("understand");
   const [minutes, setMinutes] = useState(10);
   const [goal, setGoal] = useState("");
+  const [originalQuestions, setOriginalQuestions] = useState("");
   const [step, setStep] = useState<"home" | "setup" | "calibration">("home");
   const [activeJourneyId, setActiveJourneyId] = useState<Id<"journeys"> | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -63,7 +65,6 @@ export default function HomePage() {
   const [recommendations, setRecommendations] = useState<Array<{ topic: string; reason: string; depth?: string }>>([]);
   const [expandedLesson, setExpandedLesson] = useState<string | null>(null);
   const [reflection, setReflection] = useState("");
-  const [feedback, setFeedback] = useState<{ result: string; feedback: string; objective: string } | null>(null);
 
   const activeJourney = useMemo(() => {
     if (!journeys) return null;
@@ -74,7 +75,7 @@ export default function HomePage() {
     e.preventDefault();
     setBusy(true); setError(""); setNotice("");
     try {
-      const id = await createJourney({ topic: topic.trim(), startingKnowledge: knowledge, desiredDepth: depth, dailyMinutes: minutes, ...(goal.trim() ? { goal: goal.trim() } : {}) });
+      const id = await createJourney({ topic: topic.trim(), startingKnowledge: knowledge, desiredDepth: depth, dailyMinutes: minutes, originalQuestions: originalQuestions.split("\n").map(q => q.trim()).filter(Boolean), ...(goal.trim() ? { goal: goal.trim() } : {}) });
       setActiveJourneyId(id);
       const questions = await generateCalibration({ journeyId: id }) as Question[];
       setCalibrationQuestions(questions);
@@ -90,12 +91,13 @@ export default function HomePage() {
     if (!activeJourneyId) return;
     setBusy(true); setError(""); setNotice("");
     try {
-      await submitCalibration({ journeyId: activeJourneyId, answers });
-      const result = await generateCurriculum({ journeyId: activeJourneyId });
+      if (!activeJourney?.calibrationAnswers) await submitCalibration({ journeyId: activeJourneyId, answers });
+      await generateCurriculum({ journeyId: activeJourneyId });
       setStep("home");
       setTopic("");
       setGoal("");
-      setNotice(result.usedFallback ? "AI generation is unavailable. A starter outline is ready; you can retry to generate the full lessons." : "Your learning week is ready. Let's begin.");
+      setOriginalQuestions("");
+      setNotice("Your learning week is ready. Let's begin.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't prepare your curriculum.");
     } finally { setBusy(false); }
@@ -119,11 +121,10 @@ export default function HomePage() {
   async function completeLesson(journey: Journey, lesson: Lesson) {
     setBusy(true); setError("");
     try {
-      if (reflection.trim()) setFeedback(await evaluateAnswer({ journeyId: journey._id, lessonId: lesson.id, response: reflection.trim() }));
       await markLessonComplete({ journeyId: journey._id, lessonId: lesson.id, ...(reflection.trim() ? { response: reflection.trim() } : {}) });
       setReflection("");
       setExpandedLesson(null);
-      setNotice(`Day ${lesson.day} completed. Nice work.`);
+      setNotice(`Day ${lesson.day} activity completed. Understanding is tracked separately by assessment.`);
     } catch (err) { setError(err instanceof Error ? err.message : "Couldn't save progress."); }
     finally { setBusy(false); }
   }
@@ -179,8 +180,10 @@ export default function HomePage() {
                 <input id="goal" value={goal} onChange={(e) => setGoal(e.target.value)} placeholder="e.g. explain it to a friend" />
               </div>
             </div>
+            <label className="field-label" htmlFor="original-questions">Questions you want to answer (one per line, up to four)</label>
+            <textarea id="original-questions" required rows={3} value={originalQuestions} onChange={e => setOriginalQuestions(e.target.value)} placeholder="Why do fractions need a common denominator when adding?" />
             <button className="primary-button wide" type="submit" disabled={busy || !topic.trim()}>{busy ? "Preparing your starting questions…" : "Find my starting point"} <ArrowRight size={17} /></button>
-            <p className="form-footnote">First, two quick questions. Then we'll build your week.</p>
+            <p className="form-footnote">First, a short topic diagnostic. Then we'll build your week.</p>
           </form>
         </section>
       )}
@@ -190,15 +193,16 @@ export default function HomePage() {
           <button className="back-link" onClick={() => setStep("setup")}>← Change topic settings</button>
           <div className="section-kicker"><Compass size={15} /> FIND YOUR STARTING POINT</div>
           <h1>Let's make this<br />week yours.</h1>
-          <p className="lead">No test, no grades. Your answers help us meet you where you are.</p>
+          <p className="lead">A low-pressure diagnostic, not a confidence rating. Share partial knowledge or say you are unsure. Setup does not demonstrate mastery.</p>
           <form className="setup-form" onSubmit={finishCalibration}>
             {questions.map((q, i) => <div className="calibration-question" key={q.id}>
               <label className="field-label" htmlFor={q.id}>0{i + 1} / {q.concept.replaceAll("_", " ")}</label>
               <p className="question-prompt">{q.prompt}</p>
-              <textarea id={q.id} rows={3} value={answers[q.id] ?? ""} onChange={(e) => setAnswers((old) => ({ ...old, [q.id]: e.target.value }))} placeholder="Write a little, or just a few words…" />
+              <textarea id={q.id} rows={3} disabled={!!current?.calibrationAnswers} value={current?.calibrationAnswers?.[q.id] ?? answers[q.id] ?? ""} onChange={(e) => setAnswers((old) => ({ ...old, [q.id]: e.target.value }))} placeholder="Write a little, or just a few words…" />
             </div>)}
-            <button className="primary-button wide" type="submit" disabled={busy}>{busy ? "Building your learning week…" : "Build my learning week"} <ArrowRight size={17} /></button>
-            <button className="text-button wide" type="button" disabled={busy} onClick={() => { setAnswers(Object.fromEntries(questions.map((q) => [q.id, ""]))); }}>Clear answers</button>
+            <button className="primary-button wide" type="submit" disabled={busy}>{busy ? "Building your learning week…" : current?.calibrationAnswers ? "Retry building my learning week" : "Build my learning week"} <ArrowRight size={17} /></button>
+            {current?.calibrationAnswers && <LearningProgress journeyId={current._id} />}
+            <button className="text-button wide" type="button" disabled={busy || !!current?.calibrationAnswers} onClick={() => { setAnswers(Object.fromEntries(questions.map((q) => [q.id, ""]))); }}>Clear answers</button>
           </form>
         </section>
       )}
@@ -220,6 +224,19 @@ export default function HomePage() {
             </div>
           </section>
 
+          {current && !curriculum && <section className="current-week">
+            <h2>Continue setting up {current.topic}</h2>
+            <p>Your contract and submitted diagnostic are saved. Failed generation never publishes an unvalidated outline.</p>
+            <button className="primary-button" disabled={busy} onClick={async () => {
+              setBusy(true); setError(""); setActiveJourneyId(current._id);
+              try {
+                if (current.calibrationAnswers) {await generateCurriculum({journeyId: current._id}); setNotice("Your validated learning week is ready.");}
+                else {const qs = await generateCalibration({journeyId: current._id}); setCalibrationQuestions(qs); setAnswers({}); setStep("calibration");}
+              } catch (err) {setError(err instanceof Error ? err.message : "Setup unavailable; retry.");}
+              finally {setBusy(false);}
+            }}>{busy ? "Preparing…" : current.calibrationAnswers ? "Retry curriculum generation" : "Resume diagnostic"}</button>
+            <LearningProgress journeyId={current._id} />
+          </section>}
           {current && curriculum && (
             <section className="current-week">
               <div className="section-heading">
@@ -230,8 +247,8 @@ export default function HomePage() {
               <button className="text-button" disabled={busy || completed > 0} onClick={async () => {
                 setBusy(true); setError("");
                 try {
-                  const result = await generateCurriculum({ journeyId: current._id });
-                  setNotice(result.usedFallback ? "AI generation is still unavailable. Showing a starter outline." : "Your full learning content is ready.");
+                  await generateCurriculum({ journeyId: current._id });
+                  setNotice("Your validated learning content is ready.");
                 } catch (err) { setError(err instanceof Error ? err.message : "Couldn't generate learning content."); }
                 finally { setBusy(false); }
               }}>{busy ? "Generating learning content…" : "Regenerate learning content"}</button>
@@ -241,7 +258,7 @@ export default function HomePage() {
                   const done = current.completedLessonIds.includes(lesson.id);
                   const open = expandedLesson === lesson.id;
                   return <article key={lesson.id} className={`lesson-row ${done ? "done" : ""} ${open ? "expanded" : ""}`}>
-                    <button className="lesson-main" onClick={() => setExpandedLesson(open ? null : lesson.id)}>
+                    <button className="lesson-main" onClick={() => { setExpandedLesson(open ? null : lesson.id); setReflection(""); if (!open) void startLesson({journeyId: current._id, lessonId: lesson.id}).catch(err => setError(String(err))); }}>
                       <span className="day-marker">{done ? <Check size={16} /> : String(lesson.day).padStart(2, "0")}</span>
                       <span className="lesson-title-wrap"><strong>{lesson.title}</strong><small>{lesson.purpose}</small></span>
                       <span className="lesson-time"><Clock3 size={13} /> {lesson.estimatedMinutes}m</span>
@@ -251,9 +268,10 @@ export default function HomePage() {
                       {lesson.lessonBody && <p className="lesson-body">{lesson.lessonBody}</p>}
                       <ul>{lesson.contentOutline?.map((line, i) => <li key={i}>{line}</li>)}</ul>
                       {lesson.activities?.[0] && <div className="activity-box"><span className="activity-label">TRY IT</span><p>{lesson.activities[0].prompt}</p><textarea rows={3} value={reflection} onChange={(e) => setReflection(e.target.value)} placeholder="Your thoughts, answer, or example…" /></div>}
-                      {feedback && open && <div className="activity-box feedback-box"><span className="activity-label">FEEDBACK · {feedback.objective}</span><p>{feedback.feedback}</p><small>{feedback.result.replaceAll("_", " ")}</small></div>}
+                      <p>Intended objectives: {lesson.objectiveIds?.map(id => curriculum.objectives.find(o => o.id === id)?.statement ?? id).join(" · ")}</p>
+                      <LessonAssessment journeyId={current._id} lessonId={lesson.id} assessments={(curriculum.assessments ?? []).filter(a => lesson.assessmentIds?.includes(a.id))} />
                       {!done ? <button className="primary-button" disabled={busy} onClick={() => completeLesson(current, lesson)}>{busy ? "Saving…" : "Mark day complete"} <Check size={16} /></button> : <div className="completed-note"><Check size={15} /> Day completed. Keep going!</div>}
-                      {!done && <button className="text-button" disabled={busy} onClick={async () => { setBusy(true); try { const result = await adaptUpcomingLessons({ journeyId: current._id, lessonId: lesson.id }); setNotice(result.message); } catch (err) { setError(err instanceof Error ? err.message : "Couldn't adapt upcoming lessons."); } finally { setBusy(false); } }}>Adapt upcoming lessons</button>}
+                      <button className="text-button" disabled={busy} onClick={async () => { setBusy(true); try { const result = await adaptUpcomingLessons({ journeyId: current._id, lessonId: lesson.id }); setNotice(result.message); } catch (err) { setError(err instanceof Error ? err.message : "Couldn't adapt upcoming lessons."); } finally { setBusy(false); } }}>Adapt upcoming lessons</button>
                     </div>}
                   </article>;
                 })}
@@ -262,6 +280,7 @@ export default function HomePage() {
             </section>
           )}
 
+          {current && curriculum && <LearningProgress journeyId={current._id} />}
           {current && curriculum && <section className="next-journey-section">
             <div className="section-kicker">WHEN THIS WEEK IS COMPLETE</div>
             <h2>Keep the thread going.</h2>
