@@ -1,7 +1,10 @@
 "use client";
 
-import { ConvexProvider, ConvexReactClient } from "convex/react";
+import { ConvexAuthProvider } from "@convex-dev/auth/react";
+import { AuthLoading, Authenticated, ConvexReactClient, Unauthenticated } from "convex/react";
 import { ReactNode, useState } from "react";
+
+import { SignIn } from "./sign-in";
 
 export function Providers({ children }: { children: ReactNode }) {
   const [client] = useState(() => {
@@ -16,5 +19,16 @@ export function Providers({ children }: { children: ReactNode }) {
       <p>Connect the project&apos;s Convex integration, then restart the preview.</p>
     </div>;
   }
-  return <ConvexProvider client={client}>{children}</ConvexProvider>;
+
+  return (
+    <ConvexAuthProvider client={client}>
+      <AuthLoading>
+        <div className="loading-card">Opening your learning space…</div>
+      </AuthLoading>
+      <Unauthenticated>
+        <SignIn />
+      </Unauthenticated>
+      <Authenticated>{children}</Authenticated>
+    </ConvexAuthProvider>
+  );
 }

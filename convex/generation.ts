@@ -7,6 +7,7 @@ import { createLearningContent } from "./curriculumAgent";
 import { internal } from "./_generated/api";
 import { z } from "zod";
 import { validateEvaluation, makeContract, type Evaluation, type Curriculum } from "./learningCore";
+import { requireJourneyOwnerAction, requireUser } from "./authz";
 import type { Doc } from "./_generated/dataModel";
 
 type Knowledge = "new" | "some" | "experienced" | "expert";
@@ -32,6 +33,7 @@ async function assess(input: {objectiveId: string; prompt: string; rubric: {crit
 export const generateCalibration = action({
   args: {journeyId: v.id("journeys")},
   handler: async (ctx, args): Promise<z.infer<typeof diagnosticSchema>> => {
+    await requireJourneyOwnerAction(ctx, args.journeyId);
     await ctx.runMutation(internal.learn.ensureContract, args);
     const data: LoopContext = await ctx.runQuery(internal.learn.getLoopContext, args);
     const existing = diagnosticSchema.safeParse(data.journey.calibrationQuestions);
@@ -49,6 +51,7 @@ export const generateCalibration = action({
 export const generateCurriculum = action({
   args: {journeyId: v.id("journeys")},
   handler: async (ctx, args): Promise<{ok: boolean; usedFallback: boolean; curriculum: Curriculum}> => {
+    await requireJourneyOwnerAction(ctx, args.journeyId);
     await ctx.runMutation(internal.learn.ensureContract, args);
     const data: LoopContext = await ctx.runQuery(internal.learn.getLoopContext, args);
     if (!data.journey.calibrationAnswers || !data.contract) throw new Error("Complete the diagnostic first.");
@@ -76,7 +79,8 @@ export const generateCurriculum = action({
 
 export const recommendTopics = action({
   args: { recentTopics: v.array(v.string()), mode: v.union(v.literal("recommend"), v.literal("surprise")) },
-  handler: async (_ctx, args) => {
+  handler: async (ctx, args) => {
+    await requireUser(ctx);
     const fallback = () => ({
       topics: (args.mode === "surprise"
         ? [
@@ -101,6 +105,7 @@ export const recommendTopics = action({
 export const prepareNextJourney = action({
   args: { journeyId: v.id("journeys") },
   handler: async (ctx, args): Promise<{ proposalId: string; topic: string; mode: string; rationale: string }> => {
+    await requireJourneyOwnerAction(ctx, args.journeyId);
     const context = await ctx.runQuery(internal.learn.getNextJourneyContext, { journeyId: args.journeyId });
     if (!context) throw new Error("Finish setting up this journey before preparing the next one.");
     const existing = await ctx.runQuery(internal.learn.getPreparedProposal, { journeyId: args.journeyId });
@@ -125,6 +130,7 @@ export const prepareNextJourney = action({
 export const evaluateAnswer = action({
   args: {journeyId: v.id("journeys"), lessonId: v.string(), response: v.string(), assessmentId: v.optional(v.string()), objectiveId: v.optional(v.string()), parentAttemptId: v.optional(v.id("assessmentAttempts"))},
   handler: async (ctx, args): Promise<{result: string; feedback: string; objective: string}> => {
+    await requireJourneyOwnerAction(ctx, args.journeyId);
     await ctx.runMutation(internal.learn.ensureContract, {journeyId: args.journeyId});
     const data: LoopContext = await ctx.runQuery(internal.learn.getLoopContext, {journeyId: args.journeyId});
     if (!data.contract || !data.version) throw new Error("No learning contract or curriculum.");
@@ -152,6 +158,7 @@ export const evaluateAnswer = action({
 export const adaptUpcomingLessons = action({
   args: {journeyId: v.id("journeys"), lessonId: v.string()},
   handler: async (ctx, args): Promise<{ok: boolean; changed: number; message: string}> => {
+    await requireJourneyOwnerAction(ctx, args.journeyId);
     await ctx.runMutation(internal.learn.ensureContract, {journeyId: args.journeyId});
     const data: LoopContext = await ctx.runQuery(internal.learn.getLoopContext, {journeyId: args.journeyId});
     if (!data.contract || !data.version) throw new Error("No learning contract or curriculum.");

@@ -43,9 +43,18 @@ vi.mock("./curriculumAgent", () => ({
   },
 }));
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
-const setup = () => convexTest(schema, modules);
+/**
+ * Seeds a signed-in user and returns an accessor bound to that identity, so
+ * public functions see the same owner the app's sign-in flow would produce.
+ */
+async function setup() {
+  const t = convexTest(schema, modules);
+  const userId = await t.run((ctx) => ctx.db.insert("users", { email: "learner@example.com" }));
+  return { t: t.withIdentity({ subject: userId }), userId };
+}
+type Seeded = Awaited<ReturnType<typeof setup>>;
 beforeEach(() => {mode.assessment = "normal"; mode.adaptation = "change"; mode.plannerInvalid = false;});
-async function journey(t: ReturnType<typeof setup>, questions = ["Why do halves have to be equal?"], response = "I am not sure") {
+async function journey(t: Seeded["t"], questions = ["Why do halves have to be equal?"], response = "I am not sure") {
   const id = await t.mutation(api.learn.createJourney, {topic: "Fractions", startingKnowledge: "new", desiredDepth: "understand", dailyMinutes: 10, goal: "Explain equal fractions", originalQuestions: questions});
   const qs = await t.action(api.generation.generateCalibration, {journeyId: id});
   await t.mutation(api.learn.submitCalibration, {journeyId: id, answers: Object.fromEntries(qs.map(q => [q.id, response]))});
@@ -53,7 +62,7 @@ async function journey(t: ReturnType<typeof setup>, questions = ["Why do halves 
   return id;
 }
 test("end-to-end: contract → diagnostic → teaching → incorrect answer → remediation → safe adaptation → final report", async () => {
-  const t = setup(); const id = await journey(t);
+  const { t } = await setup(); const id = await journey(t);
   const before = await t.query(internal.learn.getLoopContext, {journeyId: id});
   await t.mutation(api.learn.startLesson, {journeyId: id, lessonId: "day1"});
   expect((await t.query(api.learn.getLearningProgress, {journeyId: id})).objectives[0].state).toBe("in_progress");
@@ -80,13 +89,13 @@ test("end-to-end: contract → diagnostic → teaching → incorrect answer → 
   expect(persisted[0].outcome).toBe("achieved"); expect(persisted[0].evidenceIds).toHaveLength(3);
 });
 test("different diagnostic evidence changes planned instruction, not original objectives", async () => {
-  const t = setup(); const first = await journey(t); const second = await journey(t, undefined, "Two equal pieces");
+  const { t } = await setup(); const first = await journey(t); const second = await journey(t, undefined, "Two equal pieces");
   const a = await t.query(internal.learn.getLoopContext, {journeyId: first}); const b = await t.query(internal.learn.getLoopContext, {journeyId: second});
   expect(a.version!.curriculum.lessons[0].lessonBody).not.toBe(b.version!.curriculum.lessons[0].lessonBody);
   expect(a.contract!.contract.objectives).toEqual(b.contract!.contract.objectives);
 });
 test("completion without an answer creates no assessment or mastery, even at journey end", async () => {
-  const t = setup(); const id = await journey(t);
+  const { t } = await setup(); const id = await journey(t);
   await t.action(api.generation.evaluateAnswer, {journeyId: id, lessonId: "day1", response: ""});
   for (let day = 1; day <= 7; day++) await t.mutation(api.learn.markLessonComplete, {journeyId: id, lessonId: `day${day}`});
   const progress = await t.query(api.learn.getLearningProgress, {journeyId: id});
@@ -95,21 +104,21 @@ test("completion without an answer creates no assessment or mastery, even at jou
   expect(progress.objectives[0].outcome).toBe("not assessed");
 });
 for (const failure of ["invalid", "unavailable"]) test(`${failure} evaluator never records passing evidence`, async () => {
-  const t = setup(); const id = await journey(t); mode.assessment = failure;
+  const { t } = await setup(); const id = await journey(t); mode.assessment = failure;
   const result = await t.action(api.generation.evaluateAnswer, {journeyId: id, lessonId: "day1", response: "A very long answer with equal repeated many times"});
   expect(result.result).toBe("unavailable");
   const p = await t.query(api.learn.getLearningProgress, {journeyId: id});
   expect(p.attempts.at(-1)?.status).toBe("unavailable"); expect(p.objectives[0].outcome).toBe("not assessed");
 });
 test("an objective assessment cannot grant an unrelated objective achievement", async () => {
-  const t = setup(); const id = await journey(t, ["Why equal parts?", "How do you add halves?"]);
+  const { t } = await setup(); const id = await journey(t, ["Why equal parts?", "How do you add halves?"]);
   await t.action(api.generation.evaluateAnswer, {journeyId: id, lessonId: "day1", response: "The pieces must be equal", objectiveId: "objective1", assessmentId: "check-objective1"});
   for (let day = 1; day <= 7; day++) await t.mutation(api.learn.markLessonComplete, {journeyId: id, lessonId: `day${day}`});
   const p = await t.query(api.learn.getLearningProgress, {journeyId: id});
   expect(p.objectives[0].outcome).toBe("achieved"); expect(p.objectives[1].outcome).toBe("not assessed"); expect(p.allGoalsAchieved).toBe(false);
 });
 for (const adaptation of ["invalid", "noop"]) test(`${adaptation} adaptation retains active version and evidence`, async () => {
-  const t = setup(); const id = await journey(t);
+  const { t } = await setup(); const id = await journey(t);
   await t.action(api.generation.evaluateAnswer, {journeyId: id, lessonId: "day1", response: "Any two pieces"});
   await t.mutation(api.learn.markLessonComplete, {journeyId: id, lessonId: "day1"});
   const before = await t.query(internal.learn.getLoopContext, {journeyId: id}); mode.adaptation = adaptation;
@@ -119,21 +128,25 @@ for (const adaptation of ["invalid", "noop"]) test(`${adaptation} adaptation ret
   expect(after.adaptations[0].status).toBe(adaptation === "invalid" ? "rejected" : "unchanged");
 });
 test("generation failure cannot publish a generic fallback as personalized content", async () => {
-  const t = setup(); const id = await t.mutation(api.learn.createJourney, {topic: "Fractions", startingKnowledge: "new", desiredDepth: "understand", dailyMinutes: 10});
+  const { t } = await setup(); const id = await t.mutation(api.learn.createJourney, {topic: "Fractions", startingKnowledge: "new", desiredDepth: "understand", dailyMinutes: 10});
   const qs = await t.action(api.generation.generateCalibration, {journeyId: id});
   await t.mutation(api.learn.submitCalibration, {journeyId: id, answers: {[qs[0].id]: "Unsure"}});
   mode.plannerInvalid = true;
   await expect(t.action(api.generation.generateCurriculum, {journeyId: id})).rejects.toThrow("No new plan was published");
   expect((await t.query(internal.learn.getLoopContext, {journeyId: id})).version).toBeNull();
 });
-test("legacy journeys are readable and can complete without fabricated history", async () => {
-  const t = setup();
+test("legacy journeys stay hidden until claimed, then can complete without fabricated history", async () => {
+  const { t, userId } = await setup();
   const id = await t.run(async ctx => {
     const id = await ctx.db.insert("journeys", {topic: "Fractions", startingKnowledge: "new", desiredDepth: "understand", dailyMinutes: 10, status: "active", completedLessonIds: [], createdAt: 1, updatedAt: 1});
     const legacy = fixture(); legacy.lessons.forEach(l => l.activities.forEach(a => {delete (a as {id?: string}).id;}));
     await ctx.db.insert("curriculumVersions", {journeyId: id, version: 1, status: "published", curriculum: legacy, createdAt: 1});
     return id;
   });
+  expect(await t.query(api.learn.listJourneys, {})).toHaveLength(0);
+  expect(await t.query(api.learn.getJourney, {journeyId: id})).toBeNull();
+  await expect(t.mutation(api.learn.markLessonComplete, {journeyId: id, lessonId: "day1"})).rejects.toThrow("Learning journey not found.");
+  expect(await t.mutation(internal.learn.claimLegacyJourneys, {userId})).toBe(1);
   expect((await t.query(api.learn.listJourneys, {}))[0]._id).toBe(id);
   await t.mutation(internal.learn.ensureContract, {journeyId: id});
   await t.action(api.generation.evaluateAnswer, {journeyId: id, lessonId: "day1", response: "Two equal pieces"});
@@ -141,8 +154,28 @@ test("legacy journeys are readable and can complete without fabricated history",
   const p = await t.query(api.learn.getLearningProgress, {journeyId: id});
   expect(p.contract?.origin).toBe("legacy_snapshot"); expect(p.objectives[0].baseline).toBe("unknown"); expect(p.final).toBe(true); expect(p.objectives[1].outcome).toBe("not assessed");
 });
+test("another signed-in user cannot read, complete, or adapt someone else's journey", async () => {
+  const { t } = await setup();
+  const id = await journey(t);
+  const outsiderId = await t.run((ctx) => ctx.db.insert("users", { email: "outsider@example.com" }));
+  const outsider = t.withIdentity({ subject: outsiderId });
+  expect(await outsider.query(api.learn.listJourneys, {})).toHaveLength(0);
+  expect(await outsider.query(api.learn.getJourney, {journeyId: id})).toBeNull();
+  await expect(outsider.query(api.learn.getLearningProgress, {journeyId: id})).rejects.toThrow("Learning journey not found.");
+  await expect(outsider.mutation(api.learn.markLessonComplete, {journeyId: id, lessonId: "day1"})).rejects.toThrow("Learning journey not found.");
+  await expect(outsider.mutation(api.learn.startLesson, {journeyId: id, lessonId: "day1"})).rejects.toThrow("Learning journey not found.");
+  await expect(outsider.action(api.generation.evaluateAnswer, {journeyId: id, lessonId: "day1", response: "Any two pieces"})).rejects.toThrow("Learning journey not found.");
+  await expect(outsider.action(api.generation.adaptUpcomingLessons, {journeyId: id, lessonId: "day1"})).rejects.toThrow("Learning journey not found.");
+  await expect(outsider.action(api.generation.prepareNextJourney, {journeyId: id})).rejects.toThrow("Learning journey not found.");
+});
+test("anonymous clients cannot create or list journeys", async () => {
+  const t = convexTest(schema, modules);
+  expect(await t.query(api.learn.listJourneys, {})).toHaveLength(0);
+  await expect(t.mutation(api.learn.createJourney, {topic: "Fractions", startingKnowledge: "new", desiredDepth: "understand", dailyMinutes: 10})).rejects.toThrow("Sign in to continue.");
+  await expect(t.action(api.generation.recommendTopics, {recentTopics: [], mode: "recommend"})).rejects.toThrow("Sign in to continue.");
+});
 test("follow-on acceptance keeps the completed journey and unresolved work intact", async () => {
-  const t = setup(); const id = await journey(t);
+  const { t } = await setup(); const id = await journey(t);
   for (let day = 1; day <= 7; day++) await t.mutation(api.learn.markLessonComplete, {journeyId: id, lessonId: `day${day}`});
   const before = await t.query(internal.learn.getLoopContext, {journeyId: id});
   const proposal = await t.action(api.generation.prepareNextJourney, {journeyId: id});
@@ -155,14 +188,14 @@ test("follow-on acceptance keeps the completed journey and unresolved work intac
   expect(following.contract?.contract.questions).toEqual(before.contract?.contract.questions);
 });
 test("legacy submitted setup can generate a contract-linked plan without inventing diagnostic evidence", async () => {
-  const t = setup();
-  const id = await t.run(ctx => ctx.db.insert("journeys", {topic: "Fractions", startingKnowledge: "some", desiredDepth: "understand", dailyMinutes: 10, status: "planning", calibrationQuestions: [{id: "old", prompt: "What interests you?"}], calibrationAnswers: {old: "Numbers"}, completedLessonIds: [], createdAt: 1, updatedAt: 1}));
+  const { t, userId } = await setup();
+  const id = await t.run(ctx => ctx.db.insert("journeys", {ownerId: userId, topic: "Fractions", startingKnowledge: "some", desiredDepth: "understand", dailyMinutes: 10, status: "planning", calibrationQuestions: [{id: "old", prompt: "What interests you?"}], calibrationAnswers: {old: "Numbers"}, completedLessonIds: [], createdAt: 1, updatedAt: 1}));
   await t.action(api.generation.generateCurriculum, {journeyId: id});
   const p = await t.query(api.learn.getLearningProgress, {journeyId: id});
   expect(p.objectives[0].baseline).toBe("unknown"); expect(p.attempts).toHaveLength(0);
 });
 test("a stale adaptation cannot overwrite a newer version", async () => {
-  const t = setup(); const id = await journey(t);
+  const { t } = await setup(); const id = await journey(t);
   await t.action(api.generation.evaluateAnswer, {journeyId: id, lessonId: "day1", response: "Any two pieces"});
   const before = await t.query(internal.learn.getLoopContext, {journeyId: id});
   await t.action(api.generation.adaptUpcomingLessons, {journeyId: id, lessonId: "day1"});
@@ -172,7 +205,7 @@ test("a stale adaptation cannot overwrite a newer version", async () => {
   expect((await t.query(internal.learn.getLoopContext, {journeyId: id})).version).toEqual(active.version);
 });
 test("a gap resolved during planning cannot trigger a stale adaptation", async () => {
-  const t = setup(); const id = await journey(t);
+  const { t } = await setup(); const id = await journey(t);
   await t.action(api.generation.evaluateAnswer, {journeyId: id, lessonId: "day1", response: "Any two pieces"});
   const before = await t.query(internal.learn.getLoopContext, {journeyId: id});
   await t.action(api.generation.evaluateAnswer, {journeyId: id, lessonId: "day1", response: "Two equal pieces"});

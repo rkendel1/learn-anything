@@ -7,15 +7,20 @@
     "build": "next build",
     "start": "next start",
     "convex:dev": "convex dev",
+    "auth:keys": "node scripts/generate-auth-keys.mjs",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
     "test:backend": "vitest run",
-    "lint": "eslint app convex tests --ignore-pattern convex/_generated"
+    "lint": "eslint app convex tests --ignore-pattern convex/_generated",
+    "ci": "npm run typecheck && npm test && npm run test:backend && npm run lint && npm run build"
   },
   "dependencies": {
     "@ai-sdk/gateway": "^4.0.123",
+    "@auth/core": "0.41.1",
+    "@convex-dev/auth": "0.0.96",
     "ai": "^7.0.150",
     "convex": "^1.25.4",
+    "jose": "6.2.13",
     "lucide-react": "^0.468.0",
     "next": "^15.2.4",
     "react": "^19.0.0",

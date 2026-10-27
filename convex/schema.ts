@@ -1,8 +1,10 @@
+import { authTables } from "@convex-dev/auth/server";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
 import { contractValue, evaluationValue, rubricValue } from "./learningValidators";
 export default defineSchema({
+  ...authTables,
   objectiveOutcomes: defineTable({journeyId: v.id("journeys"), contractId: v.id("learningContracts"), curriculumVersionId: v.id("curriculumVersions"), objectiveId: v.string(),
     baseline: v.union(v.literal("unknown"), v.literal("not_demonstrated"), v.literal("developing"), v.literal("demonstrated")),
     outcome: v.union(v.literal("achieved"), v.literal("partially achieved"), v.literal("not demonstrated"), v.literal("not assessed")),
@@ -22,6 +24,7 @@ export default defineSchema({
     diff: v.array(v.object({lessonId: v.string(), before: v.string(), after: v.string()})), createdAt: v.number(),
   }).index("by_journeyId", ["journeyId"]),
   journeys: defineTable({
+    ownerId: v.optional(v.id("users")),
     topic: v.string(),
     startingKnowledge: v.union(
       v.literal("new"),
@@ -49,7 +52,9 @@ export default defineSchema({
     completedLessonIds: v.array(v.string()),
     createdAt: v.number(),
     updatedAt: v.number()
-  }).index("by_updated", ["updatedAt"]),
+  })
+    .index("by_updated", ["updatedAt"])
+    .index("by_owner_updated", ["ownerId", "updatedAt"]),
   curriculumVersions: defineTable({
     journeyId: v.id("journeys"),
     version: v.number(),

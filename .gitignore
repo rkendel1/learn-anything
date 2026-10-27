@@ -2,6 +2,7 @@ node_modules
 .next
 .env.local
 .env
+.auth
 .convex
 *.tsbuildinfo
 .DS_Store

@@ -8,8 +8,11 @@
  * @module
  */
 
+import type * as auth from "../auth.js";
+import type * as authz from "../authz.js";
 import type * as curriculumAgent from "../curriculumAgent.js";
 import type * as generation from "../generation.js";
+import type * as http from "../http.js";
 import type * as learn from "../learn.js";
 import type * as learningCore from "../learningCore.js";
 import type * as learningValidators from "../learningValidators.js";
@@ -22,8 +25,11 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  auth: typeof auth;
+  authz: typeof authz;
   curriculumAgent: typeof curriculumAgent;
   generation: typeof generation;
+  http: typeof http;
   learn: typeof learn;
   learningCore: typeof learningCore;
   learningValidators: typeof learningValidators;

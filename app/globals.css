@@ -94,6 +94,8 @@ textarea:focus, input:focus { border-color: #76927b; box-shadow: 0 0 0 3px #e8ee
 .history-item strong { font-size: 13px; font-weight: 650; }.history-item small, .history-status { color: var(--muted); font-size: 11px; }
 .footer { display: flex; justify-content: space-between; padding: 24px 0 30px; color: var(--muted); font-size: 11px; }
 .footer span:first-child { font-family: var(--serif); font-size: 15px; color: var(--green); }
+.topbar-actions { display: flex; align-items: center; gap: 18px; }
+.topbar-actions .text-button { font-size: 11px; }
 .setup-page { max-width: 750px; padding: 32px 0 65px; margin: 0 auto; }
 .back-link, .text-button { padding: 0; border: 0; color: var(--muted); background: transparent; font-size: 12px; }
 .back-link { margin-bottom: 35px; }.back-link:hover, .text-button:hover { color: var(--green); }
@@ -124,6 +126,9 @@ textarea:focus, input:focus { border-color: #76927b; box-shadow: 0 0 0 3px #e8ee
 .alert button { border: 0; background: transparent; font-size: 18px; }.alert.error { background: #f7e8e3; color: #8a3d2d; }.alert.success { background: #e8eee4; color: var(--green); }
 .loading-card, .setup-notice { margin: 35px 0; padding: 24px; border: 1px solid var(--line); border-radius: 8px; background: white; color: var(--muted); font-size: 13px; line-height: 1.7; }
 .setup-notice { max-width: 700px; margin: 80px auto; padding: 28px; }.setup-notice h2 { font-family: var(--serif); font-size: 27px; font-weight: 400; color: var(--ink); }.setup-notice code { padding: 2px 4px; background: #f0f0e9; border-radius: 3px; color: var(--green); }
+.auth-page { max-width: 470px; padding-top: 60px; }
+.auth-page h1 { font-size: clamp(38px, 5vw, 48px); }
+.auth-page .setup-form { margin-top: 25px; }
 @media (max-width: 760px) {
   .shell { padding: 0 20px; }.topbar { height: 68px; }.topbar-note { font-size: 10px; }
   .hero { grid-template-columns: 1fr; padding: 43px 0 30px; gap: 15px; }.hero-art { height: 240px; max-width: 390px; width: 100%; margin: 0 auto; }.hero h1 { font-size: 53px; }

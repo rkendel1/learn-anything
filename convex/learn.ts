@@ -2,6 +2,7 @@ import { v } from "convex/values";
 import { mutation, query, internalMutation, internalQuery } from "./_generated/server";
 import { makeContract, validatePlan, safeAdaptation, objectiveOutcome, validateEvaluation, type Curriculum } from "./learningCore";
 import { diagnosticValue, evaluationValue, rubricValue } from "./learningValidators";
+import { currentUserId, requireJourneyOwner, requireUser } from "./authz";
 import type { QueryCtx, MutationCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
@@ -9,7 +10,11 @@ import { internal } from "./_generated/api";
 export const listJourneys = query({
   args: {},
   handler: async (ctx) => {
-    const journeys = await ctx.db.query("journeys").withIndex("by_updated").order("desc").take(100);
+    const userId = await currentUserId(ctx);
+    if (!userId) return [];
+    const journeys = await ctx.db.query("journeys")
+      .withIndex("by_owner_updated", (q) => q.eq("ownerId", userId))
+      .order("desc").take(100);
     return await Promise.all(journeys.map(async (journey) => {
       const latest = await ctx.db.query("curriculumVersions")
         .withIndex("by_journey_version", (q) => q.eq("journeyId", journey._id))
@@ -22,8 +27,10 @@ export const listJourneys = query({
 export const getJourney = query({
   args: { journeyId: v.id("journeys") },
   handler: async (ctx, args) => {
+    const userId = await currentUserId(ctx);
+    if (!userId) return null;
     const journey = await ctx.db.get(args.journeyId);
-    if (!journey) return null;
+    if (!journey || journey.ownerId !== userId) return null;
     const versions = await ctx.db.query("curriculumVersions")
       .withIndex("by_journey_version", (q) => q.eq("journeyId", args.journeyId))
       .order("desc").take(100);
@@ -41,6 +48,7 @@ export const createJourney = mutation({
     originalQuestions: v.optional(v.array(v.string()))
   },
   handler: async (ctx, args) => {
+    const ownerId = await requireUser(ctx);
     const topic = args.topic.trim();
     if (!topic) throw new Error("Enter a topic to learn.");
     if (topic.length > 160) throw new Error("Keep the topic under 160 characters.");
@@ -49,7 +57,7 @@ export const createJourney = mutation({
     const { originalQuestions, ...fields } = args;
     const contract = makeContract({...fields, topic}, originalQuestions);
     const id = await ctx.db.insert("journeys", {
-      ...fields, topic, status: "calibrating", completedLessonIds: [], createdAt: now, updatedAt: now
+      ...fields, ownerId, topic, status: "calibrating", completedLessonIds: [], createdAt: now, updatedAt: now
     });
     await ctx.db.insert("learningContracts", {journeyId: id, contract, origin: "original", createdAt: now});
     return id;
@@ -75,8 +83,7 @@ export const saveCalibration = internalMutation({
 export const submitCalibration = mutation({
   args: { journeyId: v.id("journeys"), answers: v.record(v.string(), v.string()) },
   handler: async (ctx, args) => {
-    const journey = await ctx.db.get(args.journeyId);
-    if (!journey) throw new Error("Learning journey not found.");
+    const journey = await requireJourneyOwner(ctx, args.journeyId);
     if (journey.status !== "calibrating") throw new Error("Setup is already complete.");
     const questions = journey.calibrationQuestions as {id: string}[] | undefined;
     if (!questions?.length || Object.keys(args.answers).some(id => !questions.some(q => q.id === id))) throw new Error("Generate diagnostic questions first.");
@@ -128,8 +135,7 @@ export const markLessonComplete = mutation({
     response: v.optional(v.string())
   },
   handler: async (ctx, args) => {
-    const journey = await ctx.db.get(args.journeyId);
-    if (!journey) throw new Error("Learning journey not found.");
+    const journey = await requireJourneyOwner(ctx, args.journeyId);
     const latest = await ctx.db.query("curriculumVersions")
       .withIndex("by_journey_version", (q) => q.eq("journeyId", args.journeyId))
       .order("desc").first();
@@ -138,9 +144,7 @@ export const markLessonComplete = mutation({
     if (!curriculum.lessons?.some((lesson) => lesson.id === args.lessonId)) throw new Error("Lesson not found in current curriculum.");
     await ctx.runMutation(internal.learn.ensureContract, {journeyId: args.journeyId});
     if (journey.completedLessonIds.includes(args.lessonId)) { await refreshFinalOutcomes(ctx, args.journeyId); return; }
-    const completed = journey.completedLessonIds.includes(args.lessonId)
-      ? journey.completedLessonIds
-      : [...journey.completedLessonIds, args.lessonId];
+    const completed = [...journey.completedLessonIds, args.lessonId];
     await ctx.db.patch(args.journeyId, { completedLessonIds: completed, status: curriculum.lessons.every(l => completed.includes(l.id)) ? "completed" : "active", updatedAt: Date.now() });
     await refreshFinalOutcomes(ctx, args.journeyId);
     await ctx.db.insert("learningEvidence", {
@@ -156,24 +160,33 @@ export const markLessonComplete = mutation({
 
 export const getJourneyProposal = query({
   args: { journeyId: v.id("journeys") },
-  handler: async (ctx, args) => await ctx.db.query("journeyProposals")
-    .withIndex("by_source_status", (q) => q.eq("sourceJourneyId", args.journeyId).eq("status", "prepared"))
-    .order("desc").first()
+  handler: async (ctx, args) => {
+    const userId = await currentUserId(ctx);
+    if (!userId) return null;
+    const source = await ctx.db.get(args.journeyId);
+    if (!source || source.ownerId !== userId) return null;
+    return await ctx.db.query("journeyProposals")
+      .withIndex("by_source_status", (q) => q.eq("sourceJourneyId", args.journeyId).eq("status", "prepared"))
+      .order("desc").first();
+  }
 });
 
 export const acceptJourneyProposal = mutation({
   args: { proposalId: v.id("journeyProposals") },
   handler: async (ctx, args) => {
+    const userId = await requireUser(ctx);
     const proposal = await ctx.db.get(args.proposalId);
     if (!proposal || proposal.status !== "prepared") throw new Error("This journey proposal is no longer available.");
     const now = Date.now();
     const source = await ctx.db.get(proposal.sourceJourneyId);
+    if (!source || source.ownerId !== userId) throw new Error("This journey proposal is no longer available.");
     const sourceContract = await ctx.db.query("learningContracts").withIndex("by_journeyId", q => q.eq("journeyId", proposal.sourceJourneyId)).first();
     const learner = {topic: proposal.topic, startingKnowledge: "some" as const, desiredDepth: source?.desiredDepth ?? "understand" as const, dailyMinutes: source?.dailyMinutes ?? 10, goal: proposal.mode === "continue" ? source?.goal : undefined};
     const contract = makeContract(learner, proposal.mode === "continue" ? sourceContract?.contract.questions.map(q => q.text) : undefined);
     try { validatePlan(proposal.plan, {...learner, contract}); } catch { throw new Error("This proposal does not meet the learning contract. Dismiss it and prepare a new journey."); }
     const journeyId = await ctx.db.insert("journeys", {
       ...learner,
+      ownerId: userId,
       topic: proposal.topic,
       startingKnowledge: "some",
       desiredDepth: proposal.plan.learnerModel?.desiredDepth ?? "understand",
@@ -193,15 +206,12 @@ export const acceptJourneyProposal = mutation({
 export const rejectJourneyProposal = mutation({
   args: { proposalId: v.id("journeyProposals") },
   handler: async (ctx, args) => {
+    const userId = await requireUser(ctx);
     const proposal = await ctx.db.get(args.proposalId);
-    if (proposal?.status === "prepared") await ctx.db.patch(args.proposalId, { status: "rejected", updatedAt: Date.now() });
-  }
-});
-
-export const saveLessonResponse = mutation({
-  args: { journeyId: v.id("journeys"), lessonId: v.string(), response: v.string() },
-  handler: async (ctx, args) => {
-    await ctx.db.insert("learningEvidence", { journeyId: args.journeyId, lessonId: args.lessonId, kind: "lesson_response", response: args.response, createdAt: Date.now() });
+    if (!proposal) return;
+    const source = await ctx.db.get(proposal.sourceJourneyId);
+    if (!source || source.ownerId !== userId) throw new Error("This journey proposal is no longer available.");
+    if (proposal.status === "prepared") await ctx.db.patch(args.proposalId, { status: "rejected", updatedAt: Date.now() });
   }
 });
 
@@ -221,6 +231,31 @@ export const getNextJourneyContext = internalQuery({
 export const getPreparedProposal = internalQuery({
   args: { journeyId: v.id("journeys") },
   handler: async (ctx, args) => await ctx.db.query("journeyProposals").withIndex("by_source_status", (q) => q.eq("sourceJourneyId", args.journeyId).eq("status", "prepared")).order("desc").first()
+});
+
+export const getJourneyOwnerId = internalQuery({
+  args: { journeyId: v.id("journeys") },
+  handler: async (ctx, args) => (await ctx.db.get(args.journeyId))?.ownerId ?? null,
+});
+
+/**
+ * One-time migration for records created before authentication existed.
+ * Internal-only: run it deliberately from the CLI/dashboard, never from a client.
+ */
+export const claimLegacyJourneys = internalMutation({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const user = await ctx.db.get(args.userId);
+    if (!user) throw new Error("User not found.");
+    const journeys = await ctx.db.query("journeys").withIndex("by_updated").take(1000);
+    let claimed = 0;
+    for (const journey of journeys) {
+      if (journey.ownerId) continue;
+      await ctx.db.patch(journey._id, { ownerId: args.userId });
+      claimed++;
+    }
+    return claimed;
+  },
 });
 
 export const saveJourneyProposal = internalMutation({
@@ -262,7 +297,9 @@ export const getLoopContext = internalQuery({ args: {journeyId: v.id("journeys")
 export const getLearningProgress = query({
   args: {journeyId: v.id("journeys")},
   handler: async (ctx, {journeyId}) => {
+    const userId = await requireUser(ctx);
     const data = await loopContext(ctx, journeyId);
+    if (data.journey.ownerId !== userId) throw new Error("Learning journey not found.");
     const curriculum = data.version?.curriculum as Curriculum | undefined;
     const contract = data.contract?.contract;
     const objectives = (contract?.objectives ?? curriculum?.objectives ?? []).map(o => {
@@ -363,7 +400,9 @@ async function refreshFinalOutcomes(ctx: MutationCtx, journeyId: Id<"journeys">)
 export const startLesson = mutation({
   args: {journeyId: v.id("journeys"), lessonId: v.string()}, returns: v.null(),
   handler: async (ctx, args) => {
+    const userId = await requireUser(ctx);
     const data = await loopContext(ctx, args.journeyId);
+    if (data.journey.ownerId !== userId) throw new Error("Learning journey not found.");
     if (!(data.version?.curriculum as Curriculum | undefined)?.lessons.some(l => l.id === args.lessonId)) throw new Error("Lesson not found.");
     await ctx.runMutation(internal.learn.ensureContract, {journeyId: args.journeyId});
     const started = data.journey.startedLessonIds ?? [];

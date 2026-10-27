@@ -2,6 +2,7 @@
 
 import { LearningProgress, LessonAssessment } from "./learning-loop";
 import type { Curriculum } from "../convex/learningCore";
+import { useAuthActions } from "@convex-dev/auth/react";
 import { FormEvent, useMemo, useState } from "react";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "../convex/_generated/api";
@@ -36,6 +37,7 @@ const depthOptions: { value: Depth; label: string; desc: string }[] = [
 ];
 
 export default function HomePage() {
+  const { signOut } = useAuthActions();
   const journeys = useQuery(api.learn.listJourneys, {}) as Journey[] | undefined;
   const createJourney = useMutation(api.learn.createJourney);
   const submitCalibration = useMutation(api.learn.submitCalibration);
@@ -143,7 +145,10 @@ export default function HomePage() {
           <span className="brand-mark"><BookOpen size={19} /></span>
           <span>learn anything</span>
         </a>
-        <span className="topbar-note">A little wiser every week.</span>
+        <div className="topbar-actions">
+          <span className="topbar-note">A little wiser every week.</span>
+          <button className="text-button" type="button" onClick={() => void signOut()}>Sign out</button>
+        </div>
       </header>
 
       {error && <div className="alert error" role="alert">{error}<button onClick={() => setError("")} aria-label="Dismiss error">×</button></div>}

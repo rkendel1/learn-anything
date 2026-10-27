@@ -27,7 +27,17 @@ Requirements: Node.js 20.9+ and an npm account-free local development environmen
 
    Follow the CLI prompts. It will generate `convex/_generated` and a deployment URL.
 
-3. In a second terminal, create `.env.local`:
+3. Generate the auth signing keys and set them on that deployment:
+
+   ```bash
+   npm run auth:keys
+   cat .auth/jwt_private_key.pem | npx convex env set --force JWT_PRIVATE_KEY
+   cat .auth/jwks.json | npx convex env set --force JWKS
+   ```
+
+   `.auth/` holds the RS256 key pair and is git-ignored. The keys go on the **Convex deployment**, not in `.env.local`; pass `--prod` or `--deployment <name>` to target another deployment. Re-running `npm run auth:keys -- --force` rotates the pair and signs every user out.
+
+4. In a second terminal, create `.env.local`:
 
    ```bash
    cp .env.example .env.local
@@ -35,15 +45,15 @@ Requirements: Node.js 20.9+ and an npm account-free local development environmen
 
    Set `NEXT_PUBLIC_CONVEX_URL` to the deployment URL printed by Convex. Restart the Next.js process whenever this value changes.
 
-4. Start the web app:
+5. Start the web app:
 
    ```bash
    npm run dev
    ```
 
-   Open http://localhost:3000.
+   Open http://localhost:3000 and create an account with email and password.
 
-5. Enable the backend agent in the **Convex deployment environment**, not just the Next.js/Vercel environment:
+6. Enable the backend agent in the **Convex deployment environment**, not just the Next.js/Vercel environment:
 
    ```bash
    npx convex env set AI_GATEWAY_API_KEY
@@ -53,7 +63,27 @@ Requirements: Node.js 20.9+ and an npm account-free local development environmen
 
    The first command prompts for the secret so it does not appear in shell history. Model overrides are optional. Use `--prod` for the production Convex deployment. The key is read only by server-side actions. See [AI Gateway authentication](https://vercel.com/docs/ai-gateway/authentication-and-byok).
 
-6. Deploy the Convex functions with `npx convex deploy` before releasing the updated web app. Deploying Next.js alone does not publish Convex code. Keep `NEXT_PUBLIC_CONVEX_URL` pointed at the corresponding Convex deployment.
+7. Deploy the Convex functions with `npx convex deploy` before releasing the updated web app. Deploying Next.js alone does not publish Convex code. Keep `NEXT_PUBLIC_CONVEX_URL` pointed at the corresponding Convex deployment.
+
+## Authentication and ownership
+
+Sign-in uses [Convex Auth](https://labs.convex.dev/auth) with its email/password provider. `convex/auth.config.ts` validates tokens against `CONVEX_SITE_URL` plus the `JWT_PRIVATE_KEY`/`JWKS` pair above, and `convex/authz.ts` is the single place that resolves the current user and checks journey ownership.
+
+- Every public query, mutation, and action requires a signed-in user.
+- A journey stores its `ownerId`; child records (contracts, versions, evidence, proposals) are reachable only through an owned journey.
+- Missing and unauthorized journeys return the same "Learning journey not found." error so ids cannot be probed.
+- `listJourneys` only returns the signed-in user's journeys.
+
+### Claiming pre-auth journeys
+
+Journeys created before auth was added have no `ownerId`, so they are hidden from every user. After creating your account, claim them once from the CLI/dashboard with the internal mutation:
+
+```bash
+npx convex run learn:claimLegacyJourneys '{"userId":"<your users document id>"}'
+```
+
+The mutation is internal-only and refuses unknown users. Run it deliberately: it assigns every unowned journey to the given user.
+
 
 ## Backend content agent
 
@@ -77,7 +107,7 @@ Run `npm test`, `npm run typecheck`, and `npm run build`. Tests cover contract v
 
 ## Important MVP boundaries
 
-- This is a **single-user prototype**. It has no sign-in or per-user authorization yet. Do not expose its Convex deployment publicly or use it for sensitive data until authentication and ownership checks are added.
+- Sign-in is email/password through Convex Auth. Each journey is owned by the signed-in user and enforced on the server; the UI is not the security boundary.
 - The MVP validator checks schema-critical fields, lesson count, depth/time consistency, and lesson time limits. It is not a substitute for robust source retrieval, factual verification, or pedagogical review.
 - AI generation is optional. Without a working backend key, initial journeys show a labeled starter outline; generating a continuation requires the model.
 - The source retrieval pipeline, formal assessment scoring, mid-week curriculum versioning UI, and scheduled preparation of the next week are not implemented yet.
@@ -85,7 +115,7 @@ Run `npm test`, `npm run typecheck`, and `npm run build`. Tests cover contract v
 
 ## Suggested next steps
 
-1. Add Convex Auth and enforce ownership in every query/mutation/action.
+1. Add rate limits to the billable AI actions and password-reset/verification flows.
 2. Add source retrieval + URL verification before generating sourced curricula.
 3. Store lesson content separately from the curriculum plan and add curriculum validation reports.
 4. Add evaluation of written answers against versioned rubrics.
